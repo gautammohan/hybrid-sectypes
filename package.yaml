@@ -23,6 +23,8 @@ dependencies:
 - base >= 4.7 && < 5
 - containers >= 0.6 && < 1
 - mtl >= 2.2.2 && < 3
+- aeson >= 1.4.2 && < 1.5
+- utf8-string >= 1.0.1 && < 1.1
 
 library:
   source-dirs: src
