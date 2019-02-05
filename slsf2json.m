@@ -50,7 +50,7 @@ function s = slsf2json(chart)
         else
             m = struct();
             m.name = "InitialTransition";
-            m.flow = "";
+            m.flow = "InitialTransition: ";
             m.ty = "mode";
             s.src = m;
         end

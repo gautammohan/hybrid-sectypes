@@ -9,7 +9,7 @@ import Data.Map (Map, empty)
 
 type Var = String
 
-data Type = High | Low deriving (Show)
+data Type = High | Low deriving (Show, Read)
 type Env = Map Var Type
 
 -- Used to define Low <: High relation for security types in _expressions_
@@ -33,7 +33,7 @@ instance Checkable [Expr] where
 
 instance Checkable Expr where
   check _ (Expr "High") = return High
-  check _ (Expr "Low") = return Low
+  check _ _ = return Low
 
 instance Checkable Guard where
   check env (Guard expr) = check env expr
