@@ -6,8 +6,20 @@ import Model
 import Data.Aeson
 import Data.ByteString.Lazy.UTF8 (fromString)
 import Text.Parsec
-import Text.Parsec.Token (symbol)
+import Data.List (nub)
 
+var :: Parsec String () Var
+var = do
+  c1 <- letter
+  crest <- many $ alphaNum <|> char '_'
+  return (Var $ c1:crest)
+
+nonLetter = (many $ noneOf $ ['a'..'z'] ++ ['A'..'Z'])
+
+extractVars :: Parsec String () [Var]
+extractVars = do
+  allvars <- nonLetter *> var `sepEndBy` nonLetter
+  return $ nub allvars
 -- Within JSON text fields, parse into structured data
 
 expr :: Parsec String () Expr

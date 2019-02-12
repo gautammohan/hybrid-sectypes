@@ -4,8 +4,11 @@ module Model where
 -- NOTE: Currently ignoring expression parsing
 
 type Name = String
-data Expr = Expr String deriving (Eq, Show)
+newtype Var = Var String deriving (Ord, Eq)
+instance Show Var where
+  show (Var s) = s
 
+data Expr = Expr String deriving (Eq, Show)
 newtype Flow = Flow [Expr] deriving (Eq, Show)
 newtype Guard = Guard Expr deriving (Show)
 newtype Reset = Reset [Expr] deriving (Show)
