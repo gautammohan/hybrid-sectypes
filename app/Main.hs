@@ -19,7 +19,7 @@ main = do
   varStr <- readFile varFile
   let Just model = decode modelStr
       env = createEnv varStr
-  let (ty, errs) = runWriter $ check env (model :: Model)
+  let (_, errs) = runWriter $ check env (model :: Model)
   putStrLn $ show model
   putStrLn $ show errs
   where
