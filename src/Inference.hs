@@ -69,12 +69,13 @@ instance GenConstraint Expr where
     let vars = case parse extractVars "" e of
                  Left err -> error "Could not parse variables from expression"
                  Right vars -> vars
+    -- if we have already seen the variable, return its type variable, otherwise
+    -- generate its constraints
+    e <- gets env
+    let getVar v = maybe (genConstraints v) return (e !? VId v)
+
     exprTyv <- fresh
-    -- TODO: need to check if vars are already declared and return their type
-    -- variables if so. otherwise we gen constraints for the ones that are not
-    -- found and add them to the environment a bit fancier because we have a
-    -- list of variables instead of a single variable
-    varTyvs <- mapM genConstraints vars
+    varTyvs <- mapM getVar vars 
     modify $ addconstr (TVar exprTyv :== Max varTyvs)
     return exprTyv
 
@@ -109,11 +110,15 @@ instance GenConstraint Reset where
     modify $ addconstr (TVar resetTyv :== Min exprTyvs)
     return resetTyv
 
+  -- constraints generated from T-Tran rule
 instance GenConstraint Transition where
   genConstraints (Transition src dst guard reset) = do
+    -- if we have seen the mode, return its type variable, otherwise find its
+    -- constraints
     e <- gets env
     let getMode m@(Mode name _) =
           maybe (genConstraints m) return (e !? MId name)
+
     transTyv <- fresh
     srcTyv <- getMode src
     dstTyv <- getMode dst
