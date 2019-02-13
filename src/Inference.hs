@@ -3,11 +3,8 @@ module Inference where
 import Model
 import Data.Map
 import Control.Monad.State
-
-newtype Var = Var String deriving (Ord, Eq)
-
-instance Show Var where
-  show (Var s) = s
+import Parse (extractVars)
+import Text.Parsec (parse)
 
 data Type = High | Low deriving (Show, Read, Eq)
 
@@ -30,25 +27,45 @@ data Constraint = CExpr :== CExpr -- LHS,RHS must have the same security type
                 | CExpr :<= CExpr -- LHS has a lower sectype than RHS
                 deriving(Show)
 
-letters = [1..] >>= flip replicateM ['a'..'z']
-  
-fresh :: State (Env, TyEnv, [Constraint], Int) TyVar
-fresh = do
-  i <- gets (\(_,_,_,i) -> i)
-  modify (\(e,te,cs,i) -> (e,te,cs,i+1))
-  return $ TyVar (letters !! i)
+data CGenState = CGenState { env :: Env
+                           , constraints :: [Constraint]
+                           , freshCounter :: Int
+                           } deriving (Show)
 
+setenv v tyv cgs = cgs {env = insert v tyv (env cgs)}
+addconstr c cgs = cgs {constraints = c:(constraints cgs)}
+
+emptyState = CGenState {env = empty, constraints = [], freshCounter = 0}
+
+letters = [1..] >>= flip replicateM ['a'..'z']
+
+fresh :: State CGenState TyVar
+fresh = do
+  i <- gets freshCounter
+  modify $ \cgs -> cgs {freshCounter = i+1}
+  return $ TyVar (letters !! i)
 
 -- Given a component of a model, create a fresh type variable for it and
 -- generate the constraints between its tyvar and its children's tyvars
 class GenConstraint a where
-  genConstraints :: a -> State (Env, TyEnv, [Constraint], Int) TyVar
+  genConstraints :: a -> State CGenState TyVar
 
 
 instance GenConstraint Var where
   genConstraints v = do
     tyv <- fresh
-    modify (\(e,te,cs,i) -> (insert v tyv e,te,cs,i))
+    e <- gets env
+    modify $ setenv v tyv
     return tyv
 
-emptyState = (empty,empty,[] :: [Constraint],0 :: Int)
+instance GenConstraint Expr where
+  genConstraints (Expr e) = do
+    let vars = case parse extractVars "" e of
+                 Left err -> error "Could not parse variables from expression"
+                 Right vars -> vars
+    exprTyv <- fresh
+    -- sectype of expression must be greater than sectypes of the variables it
+    -- contains
+    varTyvs <- mapM genConstraints vars
+    modify $ addconstr (TVar exprTyv :== (Max varTyvs))
+    return exprTyv
