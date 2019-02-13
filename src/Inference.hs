@@ -8,7 +8,12 @@ import Text.Parsec (parse)
 
 data Type = High | Low deriving (Show, Read, Eq)
 
-type Env = Map Var TyVar
+data Id = VId Var | MId Name deriving (Eq, Ord)
+instance Show Id where
+  show (VId v) = show v
+  show (MId m) = m
+
+type Env = Map Id TyVar
 type TyEnv = Map TyVar Type
 newtype TyVar = TyVar String deriving (Ord, Eq)
 
@@ -50,22 +55,75 @@ fresh = do
 class GenConstraint a where
   genConstraints :: a -> State CGenState TyVar
 
-
 instance GenConstraint Var where
   genConstraints v = do
     tyv <- fresh
     e <- gets env
-    modify $ setenv v tyv
+    modify $ setenv (VId v) tyv
     return tyv
 
+-- sectype of expression must be greater than sectypes of the variables it
+-- contains
 instance GenConstraint Expr where
   genConstraints (Expr e) = do
     let vars = case parse extractVars "" e of
                  Left err -> error "Could not parse variables from expression"
                  Right vars -> vars
     exprTyv <- fresh
-    -- sectype of expression must be greater than sectypes of the variables it
-    -- contains
+    -- TODO: need to check if vars are already declared and return their type
+    -- variables if so. otherwise we gen constraints for the ones that are not
+    -- found and add them to the environment a bit fancier because we have a
+    -- list of variables instead of a single variable
     varTyvs <- mapM genConstraints vars
-    modify $ addconstr (TVar exprTyv :== (Max varTyvs))
+    modify $ addconstr (TVar exprTyv :== Max varTyvs)
     return exprTyv
+
+-- sectype of Flow must be the minimum of all the expressions it contains
+instance GenConstraint Flow where
+  genConstraints (Flow exprs) = do
+    flowTyv <- fresh
+    exprTyvs <- mapM genConstraints exprs
+    modify $ addconstr (TVar flowTyv :== Min exprTyvs)
+    return flowTyv
+
+-- sectype of Mode is just the sectype of its flow
+instance GenConstraint Mode where
+  genConstraints (Mode name flow) = do
+    modeTyv <- fresh
+    flowTyv <- genConstraints flow
+    modify $ addconstr (TVar modeTyv :== TVar flowTyv)
+    modify $ setenv (MId name) modeTyv
+    return modeTyv
+
+instance GenConstraint Guard where
+  genConstraints (Guard e) = do
+    guardTyv <- fresh
+    exprTyv <- genConstraints e
+    modify $ addconstr (TVar guardTyv :== TVar exprTyv)
+    return guardTyv
+
+instance GenConstraint Reset where
+  genConstraints (Reset exprs) = do
+    resetTyv <- fresh
+    exprTyvs <- mapM genConstraints exprs
+    modify $ addconstr (TVar resetTyv :== Min exprTyvs)
+    return resetTyv
+
+instance GenConstraint Transition where
+  genConstraints (Transition src dst guard reset) = do
+    e <- gets env
+    let getMode m@(Mode name _) =
+          maybe (genConstraints m) return (e !? MId name)
+    transTyv <- fresh
+    srcTyv <- getMode src
+    dstTyv <- getMode dst
+    guardTyv <- genConstraints guard
+    resetTyv <- genConstraints reset
+    let cs =
+          [ TVar resetTyv :>= TVar guardTyv
+          , TVar srcTyv :>= TVar guardTyv
+          , TVar dstTyv :>= TVar guardTyv
+          , TVar transTyv :== TVar guardTyv
+          ]
+    sequence_ . fmap (modify . addconstr) $ cs
+    return transTyv
