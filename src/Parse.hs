@@ -7,41 +7,51 @@ import Data.Aeson
 import Data.ByteString.Lazy.UTF8 (fromString)
 import Text.Parsec
 import Data.List (nub)
-
-var :: Parsec String () Var
-var = do
-  c1 <- letter
-  crest <- many $ alphaNum <|> char '_'
-  return (Var $ c1:crest)
-
-nonLetter = (many $ noneOf $ ['a'..'z'] ++ ['A'..'Z'])
+import Data.List.Split (splitOn)
+import Data.Text (unpack)
 
 extractVars :: Parsec String () [Var]
 extractVars = do
   allvars <- nonLetter *> var `sepEndBy` nonLetter
   return $ nub allvars
--- Within JSON text fields, parse into structured data
+
+nonLetter = (many $ noneOf $ ['a'..'z'] ++ ['A'..'Z'])
+
+-- Parse JSON text fields into Var, Expr, Assignment, Guard, Reset, Flow, Mode,
+-- Transition
+
+var :: Parsec String () Var
+var = do
+  char1 <- letter
+  charRest <- many $ alphaNum <|> char '_'
+  return (Var $ char1:charRest)
 
 expr :: Parsec String () Expr
 expr = many1 (alphaNum <|> oneOf "/*+-^-()|&<>=_ ." <?> "expected expression")
        >>= return . Expr
 
-exprSeparator :: Parsec String () String
-exprSeparator = try (string ";\n") <|> string ";" <?> "expected expr separator"
+assignment :: Parsec String () Assignment
+assignment = do
+  v <- var
+  e <- (many $ noneOf "=") *> char '=' *> expr
+  return (Assignment v e)
 
-exprs :: Parsec String () [Expr]
-exprs = expr `sepEndBy` exprSeparator
+assignmentSep :: Parsec String () String
+assignmentSep = try (string ";\n") <|> string ";" <?> "expected expr separator"
+
+assignments :: Parsec String () [Assignment]
+assignments = assignment `sepEndBy` assignmentSep
 
 flowHeader :: Parsec String () ()
-flowHeader = (skipMany (alphaNum <|> space <|> newline) >>
-             char ':' >>
-             skipMany newline) <?> "expected flowheader"
+flowHeader =
+  skipMany (alphaNum <|> space <|> newline) >> char ':' >>
+  skipMany newline <?> "expected flowheader"
 
 flow :: Parsec String () Flow
-flow = flowHeader >> exprs >>= return . Flow
+flow = flowHeader >> assignments >>= return . Flow
 
 reset :: Parsec String () Reset
-reset = exprs >>= return . Reset
+reset = assignments >>= return . Reset
 
 guard :: Parsec String () Guard
 guard = expr >>= return . Guard
@@ -50,7 +60,7 @@ transition :: Parsec String () (Guard,Reset)
 transition = do
   g <- option (Guard (Expr "")) $ between (char '[') (char ']') guard
   skipMany (space <|> newline)
-  r <- option (Reset [Expr ""]) $ between (char '{') (char '}') reset
+  r <- option (Reset [Assignment (Var "") (Expr "")]) $ between (char '{') (char '}') reset
   return (g,r)
 
 -- testing the parsec code
@@ -70,7 +80,13 @@ instance FromJSON Expr where
   parseJSON v = (pure Expr) <*> parseJSON v
 
 instance FromJSON Flow where
-  parseJSON v = (pure Flow) <*> parseJSON v
+  parseJSON = withText "flow expression" $ \t ->
+    do
+      case parse assignments "" (unpack t) of
+        Right assns -> pure $ Flow assns
+        Left err -> fail $ show err
+-- instance FromJSON Flow where
+--   parseJSON v = (pure Flow) <*> parseJSON v
 
 instance FromJSON Mode where
   parseJSON = withObject "mode object" $ \o ->

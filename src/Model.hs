@@ -8,10 +8,11 @@ newtype Var = Var String deriving (Ord, Eq)
 instance Show Var where
   show (Var s) = s
 
+data Assignment = Assignment Var Expr deriving (Eq, Show)
 data Expr = Expr String deriving (Eq, Show)
-newtype Flow = Flow [Expr] deriving (Eq, Show)
+newtype Flow = Flow [Assignment] deriving (Eq, Show)
 newtype Guard = Guard Expr deriving (Show)
-newtype Reset = Reset [Expr] deriving (Show)
+newtype Reset = Reset [Assignment] deriving (Show)
 
 -- Convention: Transition (Src) (Dest) Guard Reset
 data Transition = Transition Mode Mode Guard Reset deriving (Show)

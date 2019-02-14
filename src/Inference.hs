@@ -152,3 +152,24 @@ instance GenConstraint Transition where
 
   getId (Transition (Mode srcname _) (Mode dstname _) _ _) =
     TId (srcname, dstname)
+
+-- constraints for T-Tran-App rule
+instance GenConstraint Model where
+  genConstraints m@(Model _ transitions) = do
+    tyModel <- fresh
+    let validTransPairings =
+          [ (t1, t2)
+          | t1@(Transition src _ _ _) <- transitions
+          , t2@(Transition _ dest _ _) <- transitions
+          , src == dest
+          ]
+    let
+      constrainTransitions :: (Transition,Transition) -> State CGenState ()
+      constrainTransitions (t1,t2) = do
+          ty1 <- getTyVar t1
+          ty2 <- getTyVar t2
+          modify $ addconstr (TVar ty1 :>= TVar ty2)
+    mapM_ constrainTransitions validTransPairings
+    return tyModel
+
+  getId = undefined
