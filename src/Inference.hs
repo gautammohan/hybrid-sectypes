@@ -8,7 +8,12 @@ import Text.Parsec (parse)
 
 data Type = High | Low deriving (Show, Read, Eq)
 
-data Id = VId Var | MId Name deriving (Eq, Ord)
+data Id
+  = VId Var
+  | MId Name
+  | TId (Name,Name)
+  deriving (Eq, Ord)
+
 instance Show Id where
   show (VId v) = show v
   show (MId m) = m
@@ -24,7 +29,7 @@ instance Show TyVar where
 data CExpr = TVar TyVar -- type variable corresponding to expression/component
            | Max [TyVar] -- max over some TyVars
            | Min [TyVar] -- minimum over some TyVars
-           deriving(Show) 
+           deriving(Show)
 
 -- Type Constraints that our typing rules can generate
 data Constraint = CExpr :== CExpr -- LHS,RHS must have the same security type
@@ -37,7 +42,7 @@ data CGenState = CGenState { env :: Env
                            , freshCounter :: Int
                            } deriving (Show)
 
-setenv v tyv cgs = cgs {env = insert v tyv (env cgs)}
+setenv v tyv cgs = cgs {env = insert (getId v) tyv (env cgs)}
 addconstr c cgs = cgs {constraints = c:(constraints cgs)}
 
 emptyState = CGenState {env = empty, constraints = [], freshCounter = 0}
@@ -54,30 +59,37 @@ fresh = do
 -- generate the constraints between its tyvar and its children's tyvars
 class GenConstraint a where
   genConstraints :: a -> State CGenState TyVar
+  getId :: a -> Id
+
+getTyVar :: (GenConstraint a) => a -> State CGenState TyVar
+getTyVar component = do
+  e <- gets env
+  maybe (genConstraints component) return (e !? getId component)
 
 instance GenConstraint Var where
   genConstraints v = do
     tyv <- fresh
     e <- gets env
-    modify $ setenv (VId v) tyv
+    modify $ setenv v tyv
     return tyv
+
+  getId = VId
 
 -- sectype of expression must be greater than sectypes of the variables it
 -- contains
 instance GenConstraint Expr where
   genConstraints (Expr e) = do
-    let vars = case parse extractVars "" e of
-                 Left err -> error "Could not parse variables from expression"
-                 Right vars -> vars
+    let vars =
+          case parse extractVars "" e of
+            Left err -> error "Could not parse variables from expression"
+            Right vars -> vars
     -- if we have already seen the variable, return its type variable, otherwise
     -- generate its constraints
-    e <- gets env
-    let getVar v = maybe (genConstraints v) return (e !? VId v)
-
     exprTyv <- fresh
-    varTyvs <- mapM getVar vars 
+    varTyvs <- mapM getTyVar vars
     modify $ addconstr (TVar exprTyv :== Max varTyvs)
     return exprTyv
+  getId = undefined
 
 -- sectype of Flow must be the minimum of all the expressions it contains
 instance GenConstraint Flow where
@@ -87,14 +99,18 @@ instance GenConstraint Flow where
     modify $ addconstr (TVar flowTyv :== Min exprTyvs)
     return flowTyv
 
+  getId = undefined
+
 -- sectype of Mode is just the sectype of its flow
 instance GenConstraint Mode where
-  genConstraints (Mode name flow) = do
+  genConstraints m@(Mode _ flow) = do
     modeTyv <- fresh
     flowTyv <- genConstraints flow
     modify $ addconstr (TVar modeTyv :== TVar flowTyv)
-    modify $ setenv (MId name) modeTyv
+    modify $ setenv m modeTyv
     return modeTyv
+
+  getId (Mode name _) = MId name
 
 instance GenConstraint Guard where
   genConstraints (Guard e) = do
@@ -103,6 +119,8 @@ instance GenConstraint Guard where
     modify $ addconstr (TVar guardTyv :== TVar exprTyv)
     return guardTyv
 
+  getId = undefined
+
 instance GenConstraint Reset where
   genConstraints (Reset exprs) = do
     resetTyv <- fresh
@@ -110,18 +128,17 @@ instance GenConstraint Reset where
     modify $ addconstr (TVar resetTyv :== Min exprTyvs)
     return resetTyv
 
+  getId = undefined
+
   -- constraints generated from T-Tran rule
 instance GenConstraint Transition where
-  genConstraints (Transition src dst guard reset) = do
+  genConstraints t@(Transition src dst guard reset) = do
     -- if we have seen the mode, return its type variable, otherwise find its
     -- constraints
-    e <- gets env
-    let getMode m@(Mode name _) =
-          maybe (genConstraints m) return (e !? MId name)
-
     transTyv <- fresh
-    srcTyv <- getMode src
-    dstTyv <- getMode dst
+    modify $ setenv t transTyv
+    srcTyv <- getTyVar src
+    dstTyv <- getTyVar dst
     guardTyv <- genConstraints guard
     resetTyv <- genConstraints reset
     let cs =
@@ -132,3 +149,6 @@ instance GenConstraint Transition where
           ]
     sequence_ . fmap (modify . addconstr) $ cs
     return transTyv
+
+  getId (Transition (Mode srcname _) (Mode dstname _) _ _) =
+    TId (srcname, dstname)
