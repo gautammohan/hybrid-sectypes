@@ -45,7 +45,8 @@ assignment = do
   return (Assignment v e)
 
 assignmentSep :: Parsec String () String
-assignmentSep = try (string ";\n") <|> string ";" <?> "expected expr separator"
+assignmentSep =
+  choice $ map try [string ";\n ", string ";\n", string "; ", string ";"]
 
 assignments :: Parsec String () [Assignment]
 assignments = assignment `sepEndBy` assignmentSep
