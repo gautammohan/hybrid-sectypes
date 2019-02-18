@@ -26,9 +26,17 @@ var = do
   charRest <- many $ alphaNum <|> char '_'
   return (Var $ char1:charRest)
 
+arith = "/*+-^()"
+logic = "|&!"
+cmp = "<>="
+
 expr :: Parsec String () Expr
-expr = many1 (alphaNum <|> oneOf "/*+-^-()|&<>=_ ." <?> "expected expression")
-       >>= return . Expr
+expr =
+  many1
+    (alphaNum <|>
+     oneOf (arith ++ logic ++ cmp ++ "_ .") <?>
+     "sequence of numbers, digits, arithmetic/comparison/logic operators, or spaces") >>=
+  return . Expr
 
 assignment :: Parsec String () Assignment
 assignment = do

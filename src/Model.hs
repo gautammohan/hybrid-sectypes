@@ -11,8 +11,8 @@ instance Show Var where
 data Assignment = Assignment Var Expr deriving (Eq, Show)
 data Expr = Expr String deriving (Eq, Show)
 newtype Flow = Flow [Assignment] deriving (Eq, Show)
-newtype Guard = Guard Expr deriving (Show)
-newtype Reset = Reset [Assignment] deriving (Show)
+newtype Guard = Guard Expr deriving (Eq, Show)
+newtype Reset = Reset [Assignment] deriving (Eq, Show)
 
 -- Convention: Transition (Src) (Dest) Guard Reset
 data Transition = Transition Mode Mode Guard Reset deriving (Show)
