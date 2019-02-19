@@ -7,8 +7,6 @@ import Control.Monad.Writer
 import Control.Monad
 import Data.Map (Map, empty)
 
-type Var = String
-
 data Type = High | Low deriving (Show, Read)
 type Env = Map Var Type
 
@@ -37,6 +35,12 @@ instance Checkable Expr where
 
 instance Checkable Guard where
   check env (Guard expr) = check env expr
+
+instance Checkable Assignment where
+  check = undefined
+
+instance Checkable [Assignment] where
+  check = undefined
 
 -- T-RESET
 instance Checkable Reset where
@@ -90,23 +94,23 @@ instance Checkable Model where
 
 -- A Simple Test Model
 
-eh = [Expr "High",Expr "Low"]
-el = [Expr "Low"]
-fh = Flow eh
-fl = Flow el
-gh = Guard (Expr "High")
-gl = Guard (Expr "Low")
-rh = Reset eh
-rl = Reset el
-mh = Mode "High Mode" fh
-ml = Mode "Low Mode" fl
+-- eh = [Expr "High",Expr "Low"]
+-- el = [Expr "Low"]
+-- fh = Flow eh
+-- fl = Flow el
+-- gh = Guard (Expr "High")
+-- gl = Guard (Expr "Low")
+-- rh = Reset eh
+-- rl = Reset el
+-- mh = Mode "High Mode" fh
+-- ml = Mode "Low Mode" fl
 
--- Check T-TRAN rule violations
-tr1 = Transition mh mh gh rl
-tr2 = Transition mh ml gh rh
-tr3 = Transition ml mh gh (Reset [])
+-- -- Check T-TRAN rule violations
+-- tr1 = Transition mh mh gh rl
+-- tr2 = Transition mh ml gh rh
+-- tr3 = Transition ml mh gh (Reset [])
 
--- Check T-TRAN-APP rule violations
+-- -- Check T-TRAN-APP rule violations
 
-trA = Transition mh mh gh rh
-trB = Transition mh mh gl rl
+-- trA = Transition mh mh gh rh
+-- trB = Transition mh mh gl rl

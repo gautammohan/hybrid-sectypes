@@ -15,7 +15,7 @@ newtype Guard = Guard Expr deriving (Eq, Show)
 newtype Reset = Reset [Assignment] deriving (Eq, Show)
 
 -- Convention: Transition (Src) (Dest) Guard Reset
-data Transition = Transition Mode Mode Guard Reset deriving (Show)
+data Transition = Transition Mode Mode Guard Reset deriving (Eq, Show)
 data Mode = Mode Name Flow deriving(Eq, Show)
 
-data Model = Model [Mode] [Transition] | Parallel [Model] deriving (Show)
+data Model = Model [Mode] [Transition] | Parallel [Model] deriving (Eq, Show)

@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Parse
+import ParseInternals
 import Model
 import Checker
 import Data.Aeson (decode)
@@ -13,20 +13,21 @@ import Data.Function
 import System.Environment
 
 main :: IO ()
-main = do
-  [modelFile,varFile] <- getArgs
-  modelStr <- B.readFile modelFile
-  varStr <- readFile varFile
-  let Just model = decode modelStr
-      env = createEnv varStr
-  let (_, errs) = runWriter $ check env (model :: Model)
-  putStrLn $ show model
-  putStrLn $ show errs
-  where
-    createEnv :: String -> Env
-    createEnv s = s
-                  & filter (== ' ')
-                  & lines
-                  & map (splitOn ":")
-                  & map (\[a,b] -> (a, read b))
-                  & M.fromDistinctDescList
+main = putStrLn "Hello World"
+-- main = do
+--   [modelFile,varFile] <- getArgs
+--   modelStr <- B.readFile modelFile
+--   varStr <- readFile varFile
+--   let Just model = decode modelStr
+--       env = createEnv varStr
+--   let (_, errs) = runWriter $ check env (model :: Model)
+--   putStrLn $ show model
+--   putStrLn $ show errs
+--   where
+--     createEnv :: String -> Env
+--     createEnv s = s
+--                   & filter (== ' ')
+--                   & lines
+--                   & map (splitOn ":")
+--                   & map (\[a,b] -> (a, read b))
+--                   & M.fromDistinctDescList

@@ -32,7 +32,7 @@ expr =
     (alphaNum <|>
      oneOf (arith ++ logic ++ cmp ++ "_ .") <?>
      "sequence of numbers, digits, arithmetic/comparison/logic operators, or spaces") >>=
-  return . Expr . filter (/=' ')
+  return . Expr . filter (/= ' ')
 
 assignment :: Parsec String () Assignment
 assignment = do

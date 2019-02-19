@@ -3,7 +3,7 @@ module Inference where
 import Model
 import Data.Map
 import Control.Monad.State
-import Parse (extractVars)
+import ParseInternals (extractVars)
 import Text.Parsec (parse)
 
 data Type = High | Low deriving (Show, Read, Eq)
@@ -89,6 +89,10 @@ instance GenConstraint Expr where
     varTyvs <- mapM getTyVar vars
     modify $ addconstr (TVar exprTyv :== Max varTyvs)
     return exprTyv
+  getId = undefined
+
+instance GenConstraint Assignment where
+  genConstraints = undefined
   getId = undefined
 
 -- sectype of Flow must be the minimum of all the expressions it contains
