@@ -25,17 +25,12 @@ newtype TyVar = TyVar String deriving (Ord, Eq)
 instance Show TyVar where
   show (TyVar s) = "'" ++ s
 
--- Constraint Expression, what can be on the LHS or RHS of a constraint
-data CExpr = TVar TyVar -- type variable corresponding to expression/component
-           | Max [TyVar] -- max over some TyVars
-           | Min [TyVar] -- minimum over some TyVars
-           deriving(Show)
-
 -- Type Constraints that our typing rules can generate
-data Constraint = CExpr :== CExpr -- LHS,RHS must have the same security type
-                | CExpr :>= CExpr -- LHS has a higher sectype than RHS
-                | CExpr :<= CExpr -- LHS has a lower sectype than RHS
-                deriving(Show)
+data Constraint = TyVar :== TyVar -- LHS,RHS must have the same security type
+                | TyVar :>= TyVar -- LHS has a higher sectype than RHS
+                | TyVar :<= TyVar -- LHS has a lower sectype than RHS
+                deriving(Show, Eq)
+
 
 data CGenState = CGenState { env :: Env
                            , constraints :: [Constraint]
@@ -43,7 +38,12 @@ data CGenState = CGenState { env :: Env
                            } deriving (Show)
 
 setenv v tyv cgs = cgs {env = insert (getId v) tyv (env cgs)}
-addconstr c cgs = cgs {constraints = c:(constraints cgs)}
+
+addConstraint :: Constraint -> State CGenState ()
+addConstraint c = modify (\cgs -> cgs {constraints = c:(constraints cgs)})
+
+addConstraints :: [Constraint] -> State CGenState ()
+addConstraints = sequence_ . fmap addConstraint
 
 emptyState = CGenState {env = empty, constraints = [], freshCounter = 0}
 
@@ -87,20 +87,26 @@ instance GenConstraint Expr where
     -- generate its constraints
     exprTyv <- fresh
     varTyvs <- mapM getTyVar vars
-    modify $ addconstr (TVar exprTyv :== Max varTyvs)
+    addConstraints [exprTyv :>= varTyv | varTyv <- varTyvs]
     return exprTyv
   getId = undefined
 
 instance GenConstraint Assignment where
-  genConstraints = undefined
+  genConstraints (Assignment v e) = do
+    assnTyv <- fresh
+    varTyv <- getTyVar v
+    exprTyv <- genConstraints e
+    let cs = [assnTyv :== varTyv, varTyv :>= exprTyv]
+    addConstraints cs
+    return assnTyv
   getId = undefined
 
 -- sectype of Flow must be the minimum of all the expressions it contains
 instance GenConstraint Flow where
-  genConstraints (Flow exprs) = do
+  genConstraints (Flow assignments) = do
     flowTyv <- fresh
-    exprTyvs <- mapM genConstraints exprs
-    modify $ addconstr (TVar flowTyv :== Min exprTyvs)
+    assnTyvs <- mapM genConstraints assignments
+    addConstraints [flowTyv :<= assnTyv | assnTyv <- assnTyvs]
     return flowTyv
 
   getId = undefined
@@ -110,7 +116,7 @@ instance GenConstraint Mode where
   genConstraints m@(Mode _ flow) = do
     modeTyv <- fresh
     flowTyv <- genConstraints flow
-    modify $ addconstr (TVar modeTyv :== TVar flowTyv)
+    addConstraint (modeTyv :== flowTyv)
     modify $ setenv m modeTyv
     return modeTyv
 
@@ -120,7 +126,7 @@ instance GenConstraint Guard where
   genConstraints (Guard e) = do
     guardTyv <- fresh
     exprTyv <- genConstraints e
-    modify $ addconstr (TVar guardTyv :== TVar exprTyv)
+    addConstraint (guardTyv :== exprTyv)
     return guardTyv
 
   getId = undefined
@@ -129,7 +135,7 @@ instance GenConstraint Reset where
   genConstraints (Reset exprs) = do
     resetTyv <- fresh
     exprTyvs <- mapM genConstraints exprs
-    modify $ addconstr (TVar resetTyv :== Min exprTyvs)
+    addConstraints [resetTyv :<= exprTyv | exprTyv <- exprTyvs]
     return resetTyv
 
   getId = undefined
@@ -146,12 +152,12 @@ instance GenConstraint Transition where
     guardTyv <- genConstraints guard
     resetTyv <- genConstraints reset
     let cs =
-          [ TVar resetTyv :>= TVar guardTyv
-          , TVar srcTyv :>= TVar guardTyv
-          , TVar dstTyv :>= TVar guardTyv
-          , TVar transTyv :== TVar guardTyv
+          [ resetTyv :>= guardTyv
+          , srcTyv :>= guardTyv
+          , dstTyv :>= guardTyv
+          , transTyv :== guardTyv
           ]
-    sequence_ . fmap (modify . addconstr) $ cs
+    addConstraints cs
     return transTyv
 
   getId (Transition (Mode srcname _) (Mode dstname _) _ _) =
@@ -172,7 +178,7 @@ instance GenConstraint Model where
       constrainTransitions (t1,t2) = do
           ty1 <- getTyVar t1
           ty2 <- getTyVar t2
-          modify $ addconstr (TVar ty1 :>= TVar ty2)
+          addConstraint (ty1 :>= ty2)
     mapM_ constrainTransitions validTransPairings
     return tyModel
 
