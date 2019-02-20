@@ -25,10 +25,11 @@ newtype TyVar = TyVar String deriving (Ord, Eq)
 instance Show TyVar where
   show (TyVar s) = "'" ++ s
 
+data CExpr = V TyVar | T Type deriving (Show, Eq)
+
 -- Type Constraints that our typing rules can generate
-data Constraint = TyVar :== TyVar -- LHS,RHS must have the same security type
-                | TyVar :>= TyVar -- LHS has a higher sectype than RHS
-                | TyVar :<= TyVar -- LHS has a lower sectype than RHS
+data Constraint = CExpr :== CExpr -- LHS,RHS must have the same security type
+                | CExpr :>= CExpr -- LHS has a higher sectype than RHS
                 deriving(Show, Eq)
 
 
@@ -87,7 +88,7 @@ instance GenConstraint Expr where
     -- generate its constraints
     exprTyv <- fresh
     varTyvs <- mapM getTyVar vars
-    addConstraints [exprTyv :>= varTyv | varTyv <- varTyvs]
+    addConstraints [V exprTyv :>= V varTyv | varTyv <- varTyvs]
     return exprTyv
   getId = undefined
 
@@ -96,7 +97,7 @@ instance GenConstraint Assignment where
     assnTyv <- fresh
     varTyv <- getTyVar v
     exprTyv <- genConstraints e
-    let cs = [assnTyv :== varTyv, varTyv :>= exprTyv]
+    let cs = [V assnTyv :== V varTyv, V varTyv :>= V exprTyv]
     addConstraints cs
     return assnTyv
   getId = undefined
@@ -106,7 +107,7 @@ instance GenConstraint Flow where
   genConstraints (Flow assignments) = do
     flowTyv <- fresh
     assnTyvs <- mapM genConstraints assignments
-    addConstraints [flowTyv :<= assnTyv | assnTyv <- assnTyvs]
+    addConstraints [V assnTyv :>= V flowTyv | assnTyv <- assnTyvs]
     return flowTyv
 
   getId = undefined
@@ -116,7 +117,7 @@ instance GenConstraint Mode where
   genConstraints m@(Mode _ flow) = do
     modeTyv <- fresh
     flowTyv <- genConstraints flow
-    addConstraint (modeTyv :== flowTyv)
+    addConstraint (V modeTyv :== V flowTyv)
     modify $ setenv m modeTyv
     return modeTyv
 
@@ -126,7 +127,7 @@ instance GenConstraint Guard where
   genConstraints (Guard e) = do
     guardTyv <- fresh
     exprTyv <- genConstraints e
-    addConstraint (guardTyv :== exprTyv)
+    addConstraint (V guardTyv :== V exprTyv)
     return guardTyv
 
   getId = undefined
@@ -135,7 +136,7 @@ instance GenConstraint Reset where
   genConstraints (Reset exprs) = do
     resetTyv <- fresh
     exprTyvs <- mapM genConstraints exprs
-    addConstraints [resetTyv :<= exprTyv | exprTyv <- exprTyvs]
+    addConstraints [V exprTyv :>= V resetTyv | exprTyv <- exprTyvs]
     return resetTyv
 
   getId = undefined
@@ -152,10 +153,10 @@ instance GenConstraint Transition where
     guardTyv <- genConstraints guard
     resetTyv <- genConstraints reset
     let cs =
-          [ resetTyv :>= guardTyv
-          , srcTyv :>= guardTyv
-          , dstTyv :>= guardTyv
-          , transTyv :== guardTyv
+          [ V resetTyv :>= V guardTyv
+          , V srcTyv :>= V guardTyv
+          , V dstTyv :>= V guardTyv
+          , V transTyv :== V guardTyv
           ]
     addConstraints cs
     return transTyv
@@ -178,7 +179,7 @@ instance GenConstraint Model where
       constrainTransitions (t1,t2) = do
           ty1 <- getTyVar t1
           ty2 <- getTyVar t2
-          addConstraint (ty1 :>= ty2)
+          addConstraint (V ty1 :>= V ty2)
     mapM_ constrainTransitions validTransPairings
     return tyModel
 
