@@ -1,10 +1,13 @@
 module Inference where
 
-import Model
-import Data.Map
+import Data.Map (Map, empty, (!?), insert)
 import Control.Monad.State
 import ParseInternals (extractVars)
 import Text.Parsec (parse)
+import Data.Maybe (mapMaybe, isJust)
+import Data.List (delete, find)
+
+import Model
 
 data Type = High | Low deriving (Show, Read, Eq)
 
@@ -31,6 +34,54 @@ data CExpr = V TyVar | T Type deriving (Show, Eq)
 data Constraint = CExpr :== CExpr -- LHS,RHS must have the same security type
                 | CExpr :>= CExpr -- LHS has a higher sectype than RHS
                 deriving(Show, Eq)
+
+-- When given a substitution mapping a variable to a type, apply it to
+-- constraints containing a matching variable and return the updated constraint.
+-- If we make the substitution and the types mismatch, return an error. If the
+-- variable does not match, return the constraint untouched.
+subst :: TyVar -> Type -> Constraint -> Maybe Constraint
+subst v ty c@(V v1 :== V v2)
+  | v == v1 = Just (V v2 :== T ty)
+  | v == v2 = Just (V v1 :== T ty)
+subst v ty c@(V v' :== T ty')
+  | v == v' && ty == ty' = Nothing
+  | v == v' && ty /= ty' = error "Cannot Unify!" -- TODO more details later
+  | otherwise = Just c
+subst v ty (T ty' :== V v') = subst v ty (V v' :== T ty')
+subst v ty c = Just c
+
+-- If we can definitively infer the type of a variable from a constraint, return
+-- the assignment
+solve :: Constraint -> Maybe (TyVar, Type)
+solve (V v :>= T High) = Just (v, High)
+solve (T Low :>= V v) = Just (v, Low)
+solve (V v :== T t) = Just (v, t)
+solve (T t :== V v) = solve (V v :== T t)
+solve _ = Nothing
+
+-- simplify takes a list of constraints and recursively pops a solvable
+-- constraint, solves it, and substitutes the result into the remaining
+-- constraints repeatedly until no more solvable constraints remain. If a
+-- constraint cannot be substituted, this errors out
+simplify :: [Constraint] -> TyEnv
+simplify cs = simplify' cs empty
+  where
+    simplify' [] env = env
+    simplify' cs env =
+      case (findSolvable cs) of
+        Nothing -> env
+        Just c -> simplify' updatedCs updatedEnv
+          where
+            -- Note this unwrap is always safe because findSolvable depends on
+            -- solve and thus guarantees there was a solvable constraint in this
+            -- case
+            Just (v,ty) = solve c
+            remaining = delete c cs
+            updatedCs = mapMaybe (subst v ty) remaining
+            updatedEnv = insert v ty env
+
+    findSolvable :: [Constraint] -> Maybe Constraint
+    findSolvable = find (isJust . solve)
 
 
 data CGenState = CGenState { env :: Env
