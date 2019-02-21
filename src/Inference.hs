@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 module Inference where
 
 import Data.Map (Map, empty, (!?), insert)
@@ -31,59 +32,78 @@ instance Show TyVar where
 data CExpr = V TyVar | T Type deriving (Show, Eq)
 
 -- Type Constraints that our typing rules can generate
-data Constraint = CExpr :== CExpr -- LHS,RHS must have the same security type
-                | CExpr :>= CExpr -- LHS has a higher sectype than RHS
-                deriving(Show, Eq)
+data Op = Equals | GreaterThan deriving (Eq)
+instance Show Op where
+  show Equals = "%=="
+  show GreaterThan = "%>="
+
+data GenericConstraint a = MkConstraint a Op a deriving(Eq, Functor)
+instance (Show a) => Show (GenericConstraint a) where
+  show (MkConstraint lhs op rhs) = show lhs ++ " " ++ show op ++ " " ++ show rhs
+
+type Constraint = GenericConstraint CExpr
+
+(%==) :: Inference.CExpr -> Inference.CExpr -> Constraint
+(%==) c1 c2 = MkConstraint c1 Equals c2
+
+(%>=) :: Inference.CExpr -> Inference.CExpr -> Constraint
+(%>=) c1 c2 = MkConstraint c1 GreaterThan c2
 
 -- When given a substitution mapping a variable to a type, apply it to
 -- constraints containing a matching variable and return the updated constraint.
 -- If we make the substitution and the types mismatch, return an error. If the
 -- variable does not match, return the constraint untouched.
+
 subst :: TyVar -> Type -> Constraint -> Maybe Constraint
-subst v ty c@(V v1 :== V v2)
-  | v == v1 = Just (V v2 :== T ty)
-  | v == v2 = Just (V v1 :== T ty)
-subst v ty c@(V v' :== T ty')
-  | v == v' && ty == ty' = Nothing
-  | v == v' && ty /= ty' = error "Cannot Unify!" -- TODO more details later
-  | otherwise = Just c
-subst v ty (T ty' :== V v') = subst v ty (V v' :== T ty')
-subst v ty c = Just c
+subst v ty c = checkValid $ (fmap (replaceCExpr v ty) c)
+  where
+    replaceCExpr :: TyVar -> Type -> CExpr -> CExpr
+    replaceCExpr v ty ce@(V var) =
+      if v == var
+        then (T ty)
+        else ce
+    replaceCExpr v ty ce = ce
+
+    checkValid :: Constraint -> Maybe Constraint
+    checkValid (MkConstraint (T Low) GreaterThan (T High)) =
+      error "Cannot Unify"
+    checkValid (MkConstraint (T t1) Equals (T t2)) =
+      if t1 /= t2
+        then error "Cannot Unify"
+        else Nothing
+    checkValid c = Just c
+
 
 -- If we can definitively infer the type of a variable from a constraint, return
 -- the assignment
 solve :: Constraint -> Maybe (TyVar, Type)
-solve (V v :>= T High) = Just (v, High)
-solve (T Low :>= V v) = Just (v, Low)
-solve (V v :== T t) = Just (v, t)
-solve (T t :== V v) = solve (V v :== T t)
+solve (MkConstraint (V v) GreaterThan (T High)) = Just (v, High)
+solve (MkConstraint (T Low) GreaterThan (V v)) = Just (v, Low)
+solve (MkConstraint (V v) Equals (T t)) = Just (v,t)
+solve (MkConstraint (T t) Equals (V v)) = solve (V v %== T t)
 solve _ = Nothing
 
 -- simplify takes a list of constraints and recursively pops a solvable
 -- constraint, solves it, and substitutes the result into the remaining
 -- constraints repeatedly until no more solvable constraints remain. If a
 -- constraint cannot be substituted, this errors out
-simplify :: [Constraint] -> TyEnv
+simplify :: [Constraint] -> (TyEnv, [Constraint])
 simplify cs = simplify' cs empty
   where
-    simplify' [] env = env
+    simplify' [] env = (env, [])
     simplify' cs env =
       case (findSolvable cs) of
-        Nothing -> env
+        Nothing -> (env, cs)
         Just c -> simplify' updatedCs updatedEnv
-          where
             -- Note this unwrap is always safe because findSolvable depends on
             -- solve and thus guarantees there was a solvable constraint in this
             -- case
-            Just (v,ty) = solve c
-            remaining = delete c cs
-            updatedCs = mapMaybe (subst v ty) remaining
-            updatedEnv = insert v ty env
-
+          where Just (v, ty) = solve c
+                remaining = delete c cs
+                updatedCs = mapMaybe (subst v ty) remaining
+                updatedEnv = insert v ty env
     findSolvable :: [Constraint] -> Maybe Constraint
     findSolvable = find (isJust . solve)
-
-
 data CGenState = CGenState { env :: Env
                            , constraints :: [Constraint]
                            , freshCounter :: Int
@@ -139,7 +159,7 @@ instance GenConstraint Expr where
     -- generate its constraints
     exprTyv <- fresh
     varTyvs <- mapM getTyVar vars
-    addConstraints [V exprTyv :>= V varTyv | varTyv <- varTyvs]
+    addConstraints [V exprTyv %>= V varTyv | varTyv <- varTyvs]
     return exprTyv
   getId = undefined
 
@@ -148,7 +168,7 @@ instance GenConstraint Assignment where
     assnTyv <- fresh
     varTyv <- getTyVar v
     exprTyv <- genConstraints e
-    let cs = [V assnTyv :== V varTyv, V varTyv :>= V exprTyv]
+    let cs = [V assnTyv %== V varTyv, V varTyv %>= V exprTyv]
     addConstraints cs
     return assnTyv
   getId = undefined
@@ -158,17 +178,19 @@ instance GenConstraint Flow where
   genConstraints (Flow assignments) = do
     flowTyv <- fresh
     assnTyvs <- mapM genConstraints assignments
-    addConstraints [V assnTyv :>= V flowTyv | assnTyv <- assnTyvs]
+    addConstraints [V assnTyv %>= V flowTyv | assnTyv <- assnTyvs]
     return flowTyv
 
   getId = undefined
 
 -- sectype of Mode is just the sectype of its flow
+--TODO mode is same type as its invariant, or if it has no invariants, the type
+--of its flow
 instance GenConstraint Mode where
   genConstraints m@(Mode _ flow) = do
     modeTyv <- fresh
     flowTyv <- genConstraints flow
-    addConstraint (V modeTyv :== V flowTyv)
+    addConstraint (V modeTyv %== V flowTyv)
     modify $ setenv m modeTyv
     return modeTyv
 
@@ -178,7 +200,7 @@ instance GenConstraint Guard where
   genConstraints (Guard e) = do
     guardTyv <- fresh
     exprTyv <- genConstraints e
-    addConstraint (V guardTyv :== V exprTyv)
+    addConstraint (V guardTyv %== V exprTyv)
     return guardTyv
 
   getId = undefined
@@ -187,7 +209,7 @@ instance GenConstraint Reset where
   genConstraints (Reset exprs) = do
     resetTyv <- fresh
     exprTyvs <- mapM genConstraints exprs
-    addConstraints [V exprTyv :>= V resetTyv | exprTyv <- exprTyvs]
+    addConstraints [V exprTyv %>= V resetTyv | exprTyv <- exprTyvs]
     return resetTyv
 
   getId = undefined
@@ -204,10 +226,10 @@ instance GenConstraint Transition where
     guardTyv <- genConstraints guard
     resetTyv <- genConstraints reset
     let cs =
-          [ V resetTyv :>= V guardTyv
-          , V srcTyv :>= V guardTyv
-          , V dstTyv :>= V guardTyv
-          , V transTyv :== V guardTyv
+          [ V resetTyv %>= V guardTyv
+          , V srcTyv %>= V guardTyv
+          , V dstTyv %>= V guardTyv
+          , V transTyv %== V guardTyv
           ]
     addConstraints cs
     return transTyv
@@ -230,7 +252,7 @@ instance GenConstraint Model where
       constrainTransitions (t1,t2) = do
           ty1 <- getTyVar t1
           ty2 <- getTyVar t2
-          addConstraint (V ty1 :>= V ty2)
+          addConstraint (V ty1 %>= V ty2)
     mapM_ constrainTransitions validTransPairings
     return tyModel
 
