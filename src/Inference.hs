@@ -1,7 +1,8 @@
 {-# LANGUAGE DeriveFunctor #-}
 module Inference where
 
-import Data.Map (Map, empty, (!?), insert)
+import Prelude hiding (map)
+import Data.Map (filterWithKey, mapKeys, Map, empty, (!?), insert, map)
 import Control.Monad.State
 import ParseInternals (extractVars)
 import Text.Parsec (parse)
@@ -53,7 +54,6 @@ type Constraint = GenericConstraint CExpr
 -- constraints containing a matching variable and return the updated constraint.
 -- If we make the substitution and the types mismatch, return an error. If the
 -- variable does not match, return the constraint untouched.
-
 subst :: TyVar -> Type -> Constraint -> Maybe Constraint
 subst v ty c = checkValid $ (fmap (replaceCExpr v ty) c)
   where
@@ -104,6 +104,34 @@ simplify cs = simplify' cs empty
                 updatedEnv = insert v ty env
     findSolvable :: [Constraint] -> Maybe Constraint
     findSolvable = find (isJust . solve)
+
+-- Given a model and an initial partial specification of variable security types, infer as many variable types as possible
+infer :: Model -> [(Var,Type)] -> Map Var (Maybe Type)
+infer model initVarTypes =
+  let initState = execState (mapM addToEnv initVarTypes) emptyState
+      CGenState {env = env, constraints = constraints} =
+        execState (genConstraints model) initState
+      (tyenv, _) = simplify constraints
+   in getVarTypes env tyenv
+  where
+    -- Add a single initial constraint for each variable type specified by the
+    -- user
+    addToEnv :: (Var, Type) -> State CGenState ()
+    addToEnv (v, ty) = do
+      varTyv <- getTyVar v
+      addConstraint $ V varTyv %== T ty
+
+    -- For each variable, if its type variable is in the TyEnv, replace it with
+    -- the associated type. Otherwise return Nothing.
+    getVarTypes :: Env -> TyEnv -> Map Var (Maybe Type)
+    getVarTypes e te = mapKeys (\(VId v) -> v) .
+                       filterWithKey removeNonVars .
+                       map (\k -> te !? k) $ e
+      where
+        removeNonVars k _ = case k of
+                              VId _ -> True
+                              otherwise -> False
+
 data CGenState = CGenState { env :: Env
                            , constraints :: [Constraint]
                            , freshCounter :: Int
@@ -127,8 +155,6 @@ fresh = do
   modify $ \cgs -> cgs {freshCounter = i+1}
   return $ TyVar (letters !! i)
 
--- Given a component of a model, create a fresh type variable for it and
--- generate the constraints between its tyvar and its children's tyvars
 class GenConstraint a where
   genConstraints :: a -> State CGenState TyVar
   getId :: a -> Id
