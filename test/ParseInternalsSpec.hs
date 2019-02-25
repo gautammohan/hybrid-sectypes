@@ -57,3 +57,9 @@ spec = do
         Right
           ( Guard (Expr "d1-(r1+p1)<thresh||d2-(r2+p2)>=0")
           , Reset [Assignment (Var "") (Expr "")])
+    it "parses a Reset with padded spaces" $ do
+      (parse' transition "{ x = 0; y = 0; }" @=?
+       Right
+         ( Guard (Expr "")
+         , Reset
+             [Assignment (Var "x") (Expr "0"), Assignment (Var "y") (Expr "0")]))

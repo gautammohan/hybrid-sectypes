@@ -49,14 +49,19 @@ assignments = assignment `sepEndBy` assignmentSep
 
 flowHeader :: Parsec String () ()
 flowHeader =
-  skipMany (alphaNum <|> space <|> newline) >> char ':' >>
+  skipMany (alphaNum <|> space <|> newline <|> char '_') >> char ':' >>
   skipMany newline <?> "expected flowheader"
 
 flow :: Parsec String () Flow
 flow = flowHeader >> assignments >>= return . Flow
 
 reset :: Parsec String () Reset
-reset = assignments >>= return . Reset
+reset = do
+  skipMany space
+  a <- assignments
+  skipMany space
+  return $ Reset a
+-- reset = assignments >>= return . Reset
 
 guard :: Parsec String () Guard
 guard = expr >>= return . Guard

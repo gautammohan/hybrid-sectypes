@@ -64,6 +64,6 @@ spec = do
       env ! a `shouldBe` High
       env ! b `shouldBe` High
       final `shouldContain` [T High %>= V c]
-    focus $ specify "simple error: a is high and low" $ do
+    specify "simple error: a is high and low" $ do
       let init = [V a %>= T High, V a %== T Low]
       evaluate (simplify init) `shouldThrow` anyErrorCall
