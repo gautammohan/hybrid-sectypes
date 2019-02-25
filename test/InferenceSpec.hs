@@ -39,8 +39,6 @@ spec = do
           (_, st) = runState m emptyState
       (freshCounter st) `shouldBe` 8 -- 2 vars, 2 exprs, 2 assignments, 1 flow, 1 mode
       length (constraints st) `shouldBe` 9 -- flows + 1
-    specify "transitions" $ do pending
-    specify "models" $ do pending
   describe "Constraint Simplification Unit Tests" $ do
     let a = TyVar "a"; va = V a
         b = TyVar "b"; vb = V b
