@@ -15,15 +15,13 @@ import qualified Data.ByteString.Lazy as B (readFile)
 import Data.Function
 import System.Environment
 
--- Read the .json and .sectypes file to get a model with its user-supplied
--- security annotations. Infer the types of all variables in the system
--- and return the results:
---
--- On failure, return the conflicting inference steps.
---
--- Otherwise, print the inferred type of every variable in the model, and -
--- return unspecified variables (due to an underconstrained system) as -
--- warnings.
+-- | Takes two arguments: a JSON file output from exportSLSFModel.m and a
+-- corresponding file containing security-type annotations of variables in the
+-- model. Main attempts to read and parse the model and security type
+-- specification and infer the types of as many variables as it can in the
+-- model. If the security types do not agree, the program crashes. Otherwise,
+-- the inferred variable types are returned, as well as any types that were
+-- unable to be inferred, in the case of an underconstrained system.
 main :: IO ()
 main = do
   [modelFile, varFile] <- getArgs --HACK deprecated

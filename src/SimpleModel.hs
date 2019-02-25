@@ -1,3 +1,9 @@
+{-|
+
+SimpleModel is a carefully hand-coded structure meant to mirror simple_model.slx to serve as a "unit test" to verify the functions in ParseJSON work.
+
+-}
+
 module SimpleModel (simpleModel) where
 
 import Model
@@ -20,5 +26,6 @@ t1 = Transition start on1 (Guard (Expr "")) (Reset [Assignment x1 (Expr "10")])
 t2 = Transition off1 on1 (Guard (Expr "x1<=20")) (Reset [emptyAssn])
 t3 = Transition on1 off1 (Guard (Expr "x1>=30")) (Reset [emptyAssn])
 
+-- | The model itself!
 simpleModel = Model [off1,on1] [t1,t3,t2]
 

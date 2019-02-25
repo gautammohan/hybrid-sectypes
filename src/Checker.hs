@@ -1,6 +1,15 @@
+{-|
+
+[DEPRECATED]
+
+This module implements a security typechecker for hybrid systems. However, it is fairly outdated. Refer to the "Inference" for curret work
+
+-}
+
+
 {-# LANGUAGE FlexibleInstances #-}
 
-module Checker where
+module Checker (typecheck) where
 
 import Model
 import Control.Monad.Writer
@@ -25,6 +34,12 @@ type TC = Writer [Err]
 
 class Checkable a where
   check :: Env -> a -> TC Type
+
+-- | [DEPRECATED] Typecheck a model. If there are any violations, return them. Nothing implies that no errors were found, which means that the model successfully typechecked. Note: no guarantee that this works, it's been surpassed by Inference.Hs
+typecheck :: Model -> Env -> Maybe [String]
+typecheck m env = case execWriter (check env m) of
+                    [] -> Nothing
+                    errs -> Just $ map (\(Err _ s) -> s) errs
 
 instance Checkable [Expr] where
   check env exprs = foldr (liftM2 combineTypes) (return Low) (map (check env) exprs)
@@ -91,26 +106,3 @@ instance Checkable Model where
         if ty1 `validInContext` ty2
           then return ()
           else tell [Err "[Name]" ("Transitions clash")]
-
--- A Simple Test Model
-
--- eh = [Expr "High",Expr "Low"]
--- el = [Expr "Low"]
--- fh = Flow eh
--- fl = Flow el
--- gh = Guard (Expr "High")
--- gl = Guard (Expr "Low")
--- rh = Reset eh
--- rl = Reset el
--- mh = Mode "High Mode" fh
--- ml = Mode "Low Mode" fl
-
--- -- Check T-TRAN rule violations
--- tr1 = Transition mh mh gh rl
--- tr2 = Transition mh ml gh rh
--- tr3 = Transition ml mh gh (Reset [])
-
--- -- Check T-TRAN-APP rule violations
-
--- trA = Transition mh mh gh rh
--- trB = Transition mh mh gl rl

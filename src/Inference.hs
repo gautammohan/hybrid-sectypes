@@ -1,4 +1,14 @@
+{- |
+
+The Inference module implements security type inference on hybrid systems
+specified in the "Model" module. It implements constraint generation and
+simplification, and attempts to solve the security types of as many variables as
+possible given some initial specifications.
+
+-}
+
 {-# LANGUAGE DeriveFunctor #-}
+
 module Inference where
 
 import Prelude hiding (map)
@@ -11,46 +21,63 @@ import Data.List (delete, find)
 
 import Model
 
-data Type = High | Low deriving (Show, Read, Eq)
+-- | High security types are for secret data, Low can be observed publically
+data Type
+  = High
+  | Low
+  deriving (Show, Read, Eq)
 
+-- | A wrapper around each modeltype used to map components to type variables
 data Id
   = VId Var
   | MId Name
-  | TId (Name,Name)
+  | TId (Name,Name)             -- ^(src,dest)
   deriving (Eq, Ord)
 
 instance Show Id where
   show (VId v) = show v
   show (MId m) = m
+  show (TId (n1,n2)) = n1 ++ "/" ++ n2
 
+-- | Maps system components to type variables
 type Env = Map Id TyVar
+
+-- | Maps type variables to types
 type TyEnv = Map TyVar Type
+
+-- | Variables for security types, should only take on H/L values
 newtype TyVar = TyVar String deriving (Ord, Eq)
 
 instance Show TyVar where
   show (TyVar s) = "'" ++ s
 
+-- | LHS/RHS of constraints must be either a type variable or type
 data CExpr = V TyVar | T Type deriving (Show, Eq)
 
--- Type Constraints that our typing rules can generate
+-- | Relations between CExprs that our typing rules can generate
 data Op = Equals | GreaterThan deriving (Eq)
 instance Show Op where
   show Equals = "%=="
   show GreaterThan = "%>="
 
+-- | Constructor for generic constraints
 data GenericConstraint a = MkConstraint a Op a deriving(Eq, Functor)
+
 instance (Show a) => Show (GenericConstraint a) where
   show (MkConstraint lhs op rhs) = show lhs ++ " " ++ show op ++ " " ++ show rhs
 
+-- | We only support constraints relating type variables and types
 type Constraint = GenericConstraint CExpr
 
+-- | Set two CExprs to be equal
 (%==) :: Inference.CExpr -> Inference.CExpr -> Constraint
 (%==) c1 c2 = MkConstraint c1 Equals c2
 
+-- | Set c1 greater than c2
 (%>=) :: Inference.CExpr -> Inference.CExpr -> Constraint
 (%>=) c1 c2 = MkConstraint c1 GreaterThan c2
 
--- When given a substitution mapping a variable to a type, apply it to
+-- | When given a substitution mapping a variable to a type, apply it to
 -- constraints containing a matching variable and return the updated constraint.
 -- If we make the substitution and the types mismatch, return an error. If the
 -- variable does not match, return the constraint untouched.
@@ -74,8 +101,8 @@ subst v ty c = checkValid $ (fmap (replaceCExpr v ty) c)
     checkValid c = Just c
 
 
--- If we can definitively infer the type of a variable from a constraint, return
--- the assignment
+-- | Only if we can definitively infer the type of a variable from a constraint,
+-- we return the assignment
 solve :: Constraint -> Maybe (TyVar, Type)
 solve (MkConstraint (V v) GreaterThan (T High)) = Just (v, High)
 solve (MkConstraint (T Low) GreaterThan (V v)) = Just (v, Low)
@@ -83,7 +110,7 @@ solve (MkConstraint (V v) Equals (T t)) = Just (v,t)
 solve (MkConstraint (T t) Equals (V v)) = solve (V v %== T t)
 solve _ = Nothing
 
--- simplify takes a list of constraints and recursively pops a solvable
+-- | simplify takes a list of constraints and recursively pops a solvable
 -- constraint, solves it, and substitutes the result into the remaining
 -- constraints repeatedly until no more solvable constraints remain. If a
 -- constraint cannot be substituted, this errors out
@@ -105,7 +132,8 @@ simplify cs = simplify' cs empty
     findSolvable :: [Constraint] -> Maybe Constraint
     findSolvable = find (isJust . solve)
 
--- Given a model and an initial partial specification of variable security types, infer as many variable types as possible
+-- | Given a model and an initial partial specification of variable security
+-- types, infer as many variable types as possible
 infer :: Model -> [(Var,Type)] -> Map Var (Maybe Type)
 infer model initVarTypes =
   let initState = execState (mapM addToEnv initVarTypes) emptyState
@@ -131,34 +159,52 @@ infer model initVarTypes =
         removeNonVars k _ = case k of
                               VId _ -> True
                               otherwise -> False
-
+-- | Holds a constraint list and environment that get built up as we generate
+-- constraints for model components (that may recursively generate constraints
+-- from subcomponents).
 data CGenState = CGenState { env :: Env
                            , constraints :: [Constraint]
-                           , freshCounter :: Int
+                           , freshCounter :: Int -- ^tracks index to generate
+                                                 -- fresh variables
                            } deriving (Show)
 
+-- | Helper function to update env with an (Id,Tyvar) entry
 setenv v tyv cgs = cgs {env = insert (getId v) tyv (env cgs)}
 
+-- | Helper function to add a new constraint to the list of constraints
 addConstraint :: Constraint -> State CGenState ()
 addConstraint c = modify (\cgs -> cgs {constraints = c:(constraints cgs)})
 
+-- | Add multiple constraints at once
 addConstraints :: [Constraint] -> State CGenState ()
 addConstraints = sequence_ . fmap addConstraint
 
+-- | new state to begin generating constraints
 emptyState = CGenState {env = empty, constraints = [], freshCounter = 0}
 
-letters = [1..] >>= flip replicateM ['a'..'z']
-
+-- | Return a fresh type variable relative to the current constraints being
+-- generated
 fresh :: State CGenState TyVar
 fresh = do
   i <- gets freshCounter
   modify $ \cgs -> cgs {freshCounter = i+1}
   return $ TyVar (letters !! i)
-
+  where
+    -- KLUDGE probably n^2 if we have to recompute this list every time
+    letters = [1..] >>= flip replicateM ['a'..'z'] -- infinite stream of unique
+                                                   -- symbols
+-- | The @GenConstraint@ class describes how to identify a model component, and
+-- how to generate constraints between it and its subcomponents. The algorithm
+-- to generate constraints comes from the typing rules that specify what
+-- conditions must hold for no information to leak depending on the security
+-- types of subcomponents.
 class GenConstraint a where
   genConstraints :: a -> State CGenState TyVar
   getId :: a -> Id
 
+-- | Make sure we check that a type variable does not already exist before
+-- finding constraints, this prevents us from duplicating type variables for a
+-- single component (ex. the same variable in multiple exprs/flows)
 getTyVar :: (GenConstraint a) => a -> State CGenState TyVar
 getTyVar component = do
   e <- gets env
@@ -219,7 +265,6 @@ instance GenConstraint Mode where
     addConstraint (V modeTyv %== V flowTyv)
     modify $ setenv m modeTyv
     return modeTyv
-
   getId (Mode name _) = MId name
 
 instance GenConstraint Guard where
