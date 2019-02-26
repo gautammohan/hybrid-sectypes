@@ -12,12 +12,23 @@ possible given some initial specifications.
 module Inference where
 
 import Prelude hiding (map)
-import Data.Map (filterWithKey, mapKeys, Map, empty, (!?), insert, map)
+import Data.Map
+  ( Map
+  , (!?)
+  , empty
+  , filterWithKey
+  , insert
+  , map
+  , mapKeys
+  , mapWithKey
+  )
 import Control.Monad.State
 import ParseInternals (extractVars)
 import Text.Parsec (parse)
-import Data.Maybe (mapMaybe, isJust)
+import Data.Maybe (catMaybes, isJust)
 import Data.List (delete, find)
+import Data.Either
+import Data.Function ((&))
 
 import Model
 
@@ -42,123 +53,126 @@ instance Show Id where
 -- | Maps system components to type variables
 type Env = Map Id TyVar
 
--- | Maps type variables to types
-type TyEnv = Map TyVar Type
+-- | Maps type variables to their types, as well as keeping track of the type
+-- variable used when deducing the tyvar's type, i.e. it's \"history\" variable.
+type TyEnv = Map TyVar (Type, TyVar)
 
 -- | Variables for security types, should only take on H/L values
 newtype TyVar = TyVar String deriving (Ord, Eq)
 
 instance Show TyVar where
-  show (TyVar s) = "'" ++ s
+  show (TyVar s) =
+    "'" ++ s
 
--- | LHS/RHS of constraints must be either a type variable or type
-data CExpr = V TyVar | T Type deriving (Show, Eq)
-
--- | Relations between CExprs that our typing rules can generate
+-- | Relations between type variables that our typing rules can generate
 data Op = Equals | GreaterThan deriving (Eq)
 instance Show Op where
   show Equals = "%=="
   show GreaterThan = "%>="
 
 -- | Constructor for generic constraints
-data GenericConstraint a = MkConstraint a Op a deriving(Eq, Functor)
+data GenericConstraint a = MkC a Op a deriving(Eq,Functor)
 
 instance (Show a) => Show (GenericConstraint a) where
-  show (MkConstraint lhs op rhs) = show lhs ++ " " ++ show op ++ " " ++ show rhs
+  show (MkC lhs op rhs) = show lhs ++ " " ++ show op ++ " " ++ show rhs
 
--- | We only support constraints relating type variables and types
-type Constraint = GenericConstraint CExpr
+-- | Specialized constructor for constraints between type variables
+type Constraint = GenericConstraint TyVar
+  
+-- | Set two type variables to be equal
+(%==) :: TyVar -> TyVar -> Constraint
+(%==) v1 v2 = MkC v1 Equals v2
 
--- | Set two CExprs to be equal
-(%==) :: Inference.CExpr -> Inference.CExpr -> Constraint
-(%==) c1 c2 = MkConstraint c1 Equals c2
+-- | Set v1 greater than v2
+(%>=) :: TyVar -> TyVar -> Constraint
+(%>=) v1 v2 = MkC v1 GreaterThan v2
 
--- | Set c1 greater than c2
-(%>=) :: Inference.CExpr -> Inference.CExpr -> Constraint
-(%>=) c1 c2 = MkConstraint c1 GreaterThan c2
-
--- | When given a substitution mapping a variable to a type, apply it to
--- constraints containing a matching variable and return the updated constraint.
--- If we make the substitution and the types mismatch, return an error. If the
--- variable does not match, return the constraint untouched.
-subst :: TyVar -> Type -> Constraint -> Maybe Constraint
-subst v ty c = checkValid $ (fmap (replaceCExpr v ty) c)
-  where
-    replaceCExpr :: TyVar -> Type -> CExpr -> CExpr
-    replaceCExpr v ty ce@(V var) =
-      if v == var
-        then (T ty)
-        else ce
-    replaceCExpr v ty ce = ce
-
-    checkValid :: Constraint -> Maybe Constraint
-    checkValid (MkConstraint (T Low) GreaterThan (T High)) =
-      error "Cannot Unify"
-    checkValid (MkConstraint (T t1) Equals (T t2)) =
-      if t1 /= t2
-        then error "Cannot Unify"
-        else Nothing
-    checkValid c = Just c
-
+data Violation = Violation TyEnv [(TyVar,TyVar)]
 
 -- | Only if we can definitively infer the type of a variable from a constraint,
 -- we return the assignment
-solve :: Constraint -> Maybe (TyVar, Type)
-solve (MkConstraint (V v) GreaterThan (T High)) = Just (v, High)
-solve (MkConstraint (T Low) GreaterThan (V v)) = Just (v, Low)
-solve (MkConstraint (V v) Equals (T t)) = Just (v,t)
-solve (MkConstraint (T t) Equals (V v)) = solve (V v %== T t)
-solve _ = Nothing
+solve :: TyEnv -> Constraint -> Maybe (TyVar, (Type, TyVar))
+solve env c@(MkC l _ r) =
+  case fmap (env !?) c of
+    MkC Nothing Equals (Just _) -> solve env (MkC r Equals l)
+    MkC (Just (t, _)) Equals Nothing -> Just (r, (t, l))
+    MkC (Just (Low, _)) GreaterThan Nothing -> Just (r, (Low, l))
+    MkC Nothing GreaterThan (Just (High, _)) -> Just (l, (High, r))
+    otherwise -> Nothing
+
+-- | Given an environment, check if a constraint is still valid. Eliminate it if
+-- it is. If the constraint is invalid, return the two offending variables. If a
+-- constraint cannot be eliminated under the current environment, leave it
+-- untouched
+checkValid :: TyEnv -> Constraint -> Either (TyVar, TyVar) (Maybe Constraint)
+checkValid env c@(MkC lv _ rv) =
+  if lv == rv
+    then Right Nothing --LHS = RHS
+    else case (fmap (env !?) c) of
+           MkC (Just (tl, _)) Equals (Just (tr, _)) ->
+             if tl /= tr
+               then Left (lv, rv) --ty
+               else Right Nothing
+           MkC (Just (tl, _)) GreaterThan (Just (tr, _)) ->
+             if tl == Low && tr == High
+               then Left (lv, rv) --low cannot be greater than high
+               else Right Nothing
+           otherwise -> Right (Just c)
 
 -- | simplify takes a list of constraints and recursively pops a solvable
 -- constraint, solves it, and substitutes the result into the remaining
 -- constraints repeatedly until no more solvable constraints remain. If a
 -- constraint cannot be substituted, this errors out
-simplify :: [Constraint] -> (TyEnv, [Constraint])
+
+simplify :: [Constraint] -> Either Violation TyEnv
 simplify cs = simplify' cs empty
   where
-    simplify' [] env = (env, [])
+    simplify' [] env = Right env
     simplify' cs env =
-      case (findSolvable cs) of
-        Nothing -> (env, cs)
-        Just c -> simplify' updatedCs updatedEnv
-            -- Note this unwrap is always safe because findSolvable depends on
-            -- solve and thus guarantees there was a solvable constraint in this
-            -- case
-          where Just (v, ty) = solve c
-                remaining = delete c cs
-                updatedCs = mapMaybe (subst v ty) remaining
-                updatedEnv = insert v ty env
-    findSolvable :: [Constraint] -> Maybe Constraint
-    findSolvable = find (isJust . solve)
+      let findSolvable = find $ isJust . (solve env)
+       in case (findSolvable cs) of
+            Nothing -> Right env
+            Just c ->
+              case violations of
+                [] -> simplify' (catMaybes newCs) newEnv
+                otherwise -> Left (Violation env violations)
+              where Just res = solve env c --safe unwrap because findSolvable
+                                           --depends on solve
+                    newEnv = (uncurry insert) res env
+                    remainingCs = delete c cs
+                    (violations, newCs) =
+                      partitionEithers . fmap (checkValid newEnv) $ remainingCs
 
 -- | Given a model and an initial partial specification of variable security
 -- types, infer as many variable types as possible
-infer :: Model -> [(Var,Type)] -> Map Var (Maybe Type)
+
+infer :: Model -> [(Var,Type)] -> Either Violation (Map Var (Maybe Type))
 infer model initVarTypes =
   let initState = execState (mapM addToEnv initVarTypes) emptyState
       CGenState {env = env, constraints = constraints} =
         execState (genConstraints model) initState
-      (tyenv, _) = simplify constraints
-   in getVarTypes env tyenv
+   in case simplify constraints of
+        Right tyenv -> Right $ getVarTypes env tyenv
+        Left err -> Left err
   where
-    -- Add a single initial constraint for each variable type specified by the
+    -- Add a single initial constraint for each variable type specified by the   
     -- user
     addToEnv :: (Var, Type) -> State CGenState ()
     addToEnv (v, ty) = do
       varTyv <- getTyVar v
-      addConstraint $ V varTyv %== T ty
-
+      modify $ setenv v varTyv
     -- For each variable, if its type variable is in the TyEnv, replace it with
     -- the associated type. Otherwise return Nothing.
     getVarTypes :: Env -> TyEnv -> Map Var (Maybe Type)
-    getVarTypes e te = mapKeys (\(VId v) -> v) .
-                       filterWithKey removeNonVars .
-                       map (\k -> te !? k) $ e
+    getVarTypes e te =
+      e & map (\k -> te !? k) & fmap (liftM fst) & filterWithKey removeNonVars &
+      mapKeys (\(VId v) -> v)
       where
-        removeNonVars k _ = case k of
-                              VId _ -> True
-                              otherwise -> False
+        removeNonVars k v =
+          case k of
+            VId _ -> True
+            otherwise -> False
+
 -- | Holds a constraint list and environment that get built up as we generate
 -- constraints for model components (that may recursively generate constraints
 -- from subcomponents).
@@ -231,7 +245,7 @@ instance GenConstraint Expr where
     -- generate its constraints
     exprTyv <- fresh
     varTyvs <- mapM getTyVar vars
-    addConstraints [V exprTyv %>= V varTyv | varTyv <- varTyvs]
+    addConstraints [exprTyv %>= varTyv | varTyv <- varTyvs]
     return exprTyv
   getId = undefined
 
@@ -240,7 +254,7 @@ instance GenConstraint Assignment where
     assnTyv <- fresh
     varTyv <- getTyVar v
     exprTyv <- genConstraints e
-    let cs = [V assnTyv %== V varTyv, V varTyv %>= V exprTyv]
+    let cs = [assnTyv %== varTyv, varTyv %>= exprTyv]
     addConstraints cs
     return assnTyv
   getId = undefined
@@ -250,7 +264,7 @@ instance GenConstraint Flow where
   genConstraints (Flow assignments) = do
     flowTyv <- fresh
     assnTyvs <- mapM genConstraints assignments
-    addConstraints [V assnTyv %>= V flowTyv | assnTyv <- assnTyvs]
+    addConstraints [assnTyv %>= flowTyv | assnTyv <- assnTyvs]
     return flowTyv
 
   getId = undefined
@@ -262,7 +276,7 @@ instance GenConstraint Mode where
   genConstraints m@(Mode _ flow) = do
     modeTyv <- fresh
     flowTyv <- genConstraints flow
-    addConstraint (V modeTyv %== V flowTyv)
+    addConstraint (modeTyv %== flowTyv)
     modify $ setenv m modeTyv
     return modeTyv
   getId (Mode name _) = MId name
@@ -271,7 +285,7 @@ instance GenConstraint Guard where
   genConstraints (Guard e) = do
     guardTyv <- fresh
     exprTyv <- genConstraints e
-    addConstraint (V guardTyv %== V exprTyv)
+    addConstraint (guardTyv %== exprTyv)
     return guardTyv
 
   getId = undefined
@@ -280,7 +294,7 @@ instance GenConstraint Reset where
   genConstraints (Reset exprs) = do
     resetTyv <- fresh
     exprTyvs <- mapM genConstraints exprs
-    addConstraints [V exprTyv %>= V resetTyv | exprTyv <- exprTyvs]
+    addConstraints [exprTyv %>= resetTyv | exprTyv <- exprTyvs]
     return resetTyv
 
   getId = undefined
@@ -297,10 +311,10 @@ instance GenConstraint Transition where
     guardTyv <- genConstraints guard
     resetTyv <- genConstraints reset
     let cs =
-          [ V resetTyv %>= V guardTyv
-          , V srcTyv %>= V guardTyv
-          , V dstTyv %>= V guardTyv
-          , V transTyv %== V guardTyv
+          [ resetTyv %>= guardTyv
+          , srcTyv %>= guardTyv
+          , dstTyv %>= guardTyv
+          , transTyv %== guardTyv
           ]
     addConstraints cs
     return transTyv
@@ -323,7 +337,7 @@ instance GenConstraint Model where
       constrainTransitions (t1,t2) = do
           ty1 <- getTyVar t1
           ty2 <- getTyVar t2
-          addConstraint (V ty1 %>= V ty2)
+          addConstraint (ty1 %>= ty2)
     mapM_ constrainTransitions validTransPairings
     return tyModel
 
