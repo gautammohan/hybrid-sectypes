@@ -31,7 +31,7 @@ main = do
   putStrLn $
     case eitherDecode modelStr of
       Left err -> "Could not read model -- " ++ err
-      Right model -> show $ infer model vs
+      Right model -> show $ infer (model :: Model) vs
   where
     getVarTypes :: String -> [(Var, Type)]
     getVarTypes s =

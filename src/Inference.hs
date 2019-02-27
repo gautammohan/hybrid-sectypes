@@ -14,9 +14,11 @@ module Inference where
 import Prelude hiding (map)
 import Data.Map
   ( Map
+  , (!)
   , (!?)
   , empty
   , filterWithKey
+  , fromList
   , insert
   , map
   , mapKeys
@@ -78,7 +80,7 @@ instance (Show a) => Show (GenericConstraint a) where
 
 -- | Specialized constructor for constraints between type variables
 type Constraint = GenericConstraint TyVar
-  
+
 -- | Set two type variables to be equal
 (%==) :: TyVar -> TyVar -> Constraint
 (%==) v1 v2 = MkC v1 Equals v2
@@ -87,7 +89,7 @@ type Constraint = GenericConstraint TyVar
 (%>=) :: TyVar -> TyVar -> Constraint
 (%>=) v1 v2 = MkC v1 GreaterThan v2
 
-data Violation = Violation TyEnv [(TyVar,TyVar)]
+data Violation = Violation TyEnv [(TyVar,TyVar)] deriving (Show)
 
 -- | Only if we can definitively infer the type of a variable from a constraint,
 -- we return the assignment
@@ -123,46 +125,52 @@ checkValid env c@(MkC lv _ rv) =
 -- constraint, solves it, and substitutes the result into the remaining
 -- constraints repeatedly until no more solvable constraints remain. If a
 -- constraint cannot be substituted, this errors out
-
-simplify :: [Constraint] -> Either Violation TyEnv
-simplify cs = simplify' cs empty
-  where
-    simplify' [] env = Right env
-    simplify' cs env =
-      let findSolvable = find $ isJust . (solve env)
-       in case (findSolvable cs) of
-            Nothing -> Right env
-            Just c ->
-              case violations of
-                [] -> simplify' (catMaybes newCs) newEnv
-                otherwise -> Left (Violation env violations)
-              where Just res = solve env c --safe unwrap because findSolvable
+simplify :: [Constraint] -> TyEnv -> Either Violation TyEnv
+simplify [] env = Right env
+simplify cs env =
+  let findSolvable = find $ isJust . (solve env)
+   in case (findSolvable cs) of
+        Nothing -> Right env
+        Just c ->
+          case violations of
+            [] -> simplify (catMaybes newCs) newEnv
+            otherwise -> Left (Violation env violations)
+          where Just res = solve env c --safe unwrap because findSolvable
                                            --depends on solve
-                    newEnv = (uncurry insert) res env
-                    remainingCs = delete c cs
-                    (violations, newCs) =
-                      partitionEithers . fmap (checkValid newEnv) $ remainingCs
+                newEnv = (uncurry insert) res env
+                remainingCs = delete c cs
+                (violations, newCs) =
+                  partitionEithers . fmap (checkValid newEnv) $ remainingCs
+
+genInitialEnvs :: [(Var,Type)] -> (TyEnv, CGenState)
+genInitialEnvs pairs =
+  let initState = execState (mapM addVarToEnv pairs) emptyState
+      e = env initState
+      tyenv =
+        fromList $ fmap (\(v, ty) -> ((e ! VId v), (ty, TyVar "user'"))) pairs
+   in (tyenv, initState)
+  where
+    addVarToEnv :: (Var, Type) -> State CGenState ()
+    addVarToEnv (v, ty) = do
+      varTyv <- getTyVar v
+      modify $ setenv v varTyv
 
 -- | Given a model and an initial partial specification of variable security
 -- types, infer as many variable types as possible
-
-infer :: Model -> [(Var,Type)] -> Either Violation (Map Var (Maybe Type))
-infer model initVarTypes =
-  let initState = execState (mapM addToEnv initVarTypes) emptyState
-      CGenState {env = env, constraints = constraints} =
-        execState (genConstraints model) initState
-   in case simplify constraints of
+infer ::
+     (GenConstraint a)
+  => a
+  -> [(Var, Type)]
+  -> Either Violation (Map Var (Maybe Type))
+infer component initVarTypes =
+  let (initTyEnv, CGenState {constraints = constraints, env = env}) =
+        genInitialEnvs initVarTypes
+   in case simplify constraints initTyEnv of
         Right tyenv -> Right $ getVarTypes env tyenv
         Left err -> Left err
-  where
-    -- Add a single initial constraint for each variable type specified by the   
-    -- user
-    addToEnv :: (Var, Type) -> State CGenState ()
-    addToEnv (v, ty) = do
-      varTyv <- getTyVar v
-      modify $ setenv v varTyv
     -- For each variable, if its type variable is in the TyEnv, replace it with
     -- the associated type. Otherwise return Nothing.
+  where
     getVarTypes :: Env -> TyEnv -> Map Var (Maybe Type)
     getVarTypes e te =
       e & map (\k -> te !? k) & fmap (liftM fst) & filterWithKey removeNonVars &
