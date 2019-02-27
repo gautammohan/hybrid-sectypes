@@ -28,15 +28,20 @@ spec = do
     specify "flows" $ do
       let a = Assignment (Var "x2_dot") (Expr "-0.02*x2")
           st = getFinalSt (Flow [a, a])
-      (freshCounter st) `shouldBe` 7 --2 vars, 2 exprs, 2 assignments, 1 flow
-      length (constraints st) `shouldBe` 8 -- 2 * (2 * var/expr), 2 assn/expr, 2 flow/expr
+      (freshCounter st) `shouldBe` 6 --2 vars, 1 duplicate expr, 2 assignments, 1 flow
+      length (constraints st) `shouldBe` 7 -- 2 * (1 * var/expr), 2 assn/expr, 2 flow/expr
     specify "modes" $ do
       let a = Assignment (Var "x2_dot") (Expr "-0.02*x2")
           f = Flow [a, a]
           st = getFinalSt (Mode "m" f)
-      (freshCounter st) `shouldBe` 8 -- 2 vars, 2 exprs, 2 assignments, 1 flow,
+      (freshCounter st) - 1 `shouldBe` 6 -- 2 vars, 1 exprs, 1 assignment, 1 flow,
                                      -- 1 mode
-      length (constraints st) `shouldBe` 9 -- flows + 1
+      length (constraints st) `shouldBe` 8 -- flows + 1
+    specify "identical components" $ do
+      let a = Assignment (Var "x2_dot") (Expr "-0.02*x2")
+          f = Flow [a, a]
+          st = getFinalSt (Mode "m" f)
+      (freshCounter st - 1) `shouldBe` (length $ keys $ env st)
   describe "Constraint Simplification Unit Tests" $ do
     specify "One variable test" $ do
       let a = Var "a"

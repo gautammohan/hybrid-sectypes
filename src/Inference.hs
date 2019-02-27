@@ -40,17 +40,21 @@ data Type
   | Low
   deriving (Show, Read, Eq)
 
--- | A wrapper around each modeltype used to map components to type variables
+-- | A wrapper around each modeltype used to map components to type variables.
+-- Note: currently this is super hacky and inefficient, we're basically just
+-- weakening our data types into arbitrary strings. There's probably a better
+-- thing we could use but oh well...
 data Id
   = VId Var
+  | EId String
+  | AId String
+  | FId String
   | MId Name
   | TId (Name,Name)             -- ^(src,dest)
-  deriving (Eq, Ord)
-
-instance Show Id where
-  show (VId v) = show v
-  show (MId m) = m
-  show (TId (n1,n2)) = n1 ++ "/" ++ n2
+  | GId String
+  | RId String
+  | ModelId String
+  deriving (Eq, Ord, Show)
 
 -- | Maps system components to type variables
 type Env = Map Id TyVar
@@ -215,6 +219,7 @@ fresh = do
     -- KLUDGE probably n^2 if we have to recompute this list every time
     letters = [1..] >>= flip replicateM ['a'..'z'] -- infinite stream of unique
                                                    -- symbols
+
 -- | The @GenConstraint@ class describes how to identify a model component, and
 -- how to generate constraints between it and its subcomponents. The algorithm
 -- to generate constraints comes from the typing rules that specify what
@@ -226,98 +231,100 @@ class GenConstraint a where
 
 -- | Make sure we check that a type variable does not already exist before
 -- finding constraints, this prevents us from duplicating type variables for a
--- single component (ex. the same variable in multiple exprs/flows)
+-- single component (i.e. the same variable in multiple exprs or exprs that are
+-- semantically equivalent)
 getTyVar :: (GenConstraint a) => a -> State CGenState TyVar
 getTyVar component = do
   e <- gets env
   maybe (genConstraints component) return (e !? getId component)
 
+getAndSetFresh :: (GenConstraint a) => a -> State CGenState TyVar
+getAndSetFresh component = do
+  tyv <- fresh
+  modify $ setenv component tyv
+  return tyv
+
 instance GenConstraint Var where
   genConstraints v = do
-    tyv <- fresh
-    e <- gets env
+    tyv <- getAndSetFresh v
     modify $ setenv v tyv
     return tyv
-
   getId = VId
 
 -- sectype of expression must be greater than sectypes of the variables it
 -- contains
 instance GenConstraint Expr where
-  genConstraints (Expr e) = do
+  genConstraints expr@(Expr e) = do
     let vars =
           case parse extractVars "" e of
             Left err -> error "Could not parse variables from expression"
             Right vars -> vars
     -- if we have already seen the variable, return its type variable, otherwise
     -- generate its constraints
-    exprTyv <- fresh
+    exprTyv <- getAndSetFresh expr
     varTyvs <- mapM getTyVar vars
     addConstraints [exprTyv %>= varTyv | varTyv <- varTyvs]
     return exprTyv
-  getId = undefined
+  getId (Expr e) = EId e
 
 instance GenConstraint Assignment where
-  genConstraints (Assignment v e) = do
-    assnTyv <- fresh
+  genConstraints assn@(Assignment v e) = do
+    assnTyv <- getAndSetFresh assn
     varTyv <- getTyVar v
-    exprTyv <- genConstraints e
+    exprTyv <- getTyVar e
     let cs = [assnTyv %== varTyv, varTyv %>= exprTyv]
     addConstraints cs
     return assnTyv
-  getId = undefined
+  getId (Assignment (Var v) (Expr e)) = AId (v ++ "=" ++ e)
 
 -- sectype of Flow must be the minimum of all the expressions it contains
 instance GenConstraint Flow where
-  genConstraints (Flow assignments) = do
-    flowTyv <- fresh
+  genConstraints flow@(Flow assignments) = do
+    flowTyv <- getAndSetFresh flow
     assnTyvs <- mapM genConstraints assignments
     addConstraints [assnTyv %>= flowTyv | assnTyv <- assnTyvs]
     return flowTyv
-
-  getId = undefined
+  getId (Flow assignments) = FId $ foldMap ((\(AId a) -> a) . getId) assignments
 
 -- sectype of Mode is just the sectype of its flow
 --TODO mode is same type as its invariant, or if it has no invariants, the type
 --of its flow
 instance GenConstraint Mode where
   genConstraints m@(Mode _ flow) = do
-    modeTyv <- fresh
-    flowTyv <- genConstraints flow
+    modeTyv <- getAndSetFresh m
+    flowTyv <- getTyVar flow
     addConstraint (modeTyv %== flowTyv)
-    modify $ setenv m modeTyv
     return modeTyv
   getId (Mode name _) = MId name
 
 instance GenConstraint Guard where
-  genConstraints (Guard e) = do
-    guardTyv <- fresh
-    exprTyv <- genConstraints e
+  genConstraints guard@(Guard e) = do
+    guardTyv <- getAndSetFresh guard
+    exprTyv <- getTyVar e
     addConstraint (guardTyv %== exprTyv)
     return guardTyv
 
-  getId = undefined
+  getId = (\(EId e) -> GId e) . getId
 
 instance GenConstraint Reset where
-  genConstraints (Reset exprs) = do
-    resetTyv <- fresh
+  genConstraints reset@(Reset exprs) = do
+    resetTyv <- getAndSetFresh reset
     exprTyvs <- mapM genConstraints exprs
     addConstraints [exprTyv %>= resetTyv | exprTyv <- exprTyvs]
     return resetTyv
 
-  getId = undefined
+  getId = (\(AId assns) -> RId assns) . getId
 
   -- constraints generated from T-Tran rule
 instance GenConstraint Transition where
   genConstraints t@(Transition src dst guard reset) = do
     -- if we have seen the mode, return its type variable, otherwise find its
     -- constraints
-    transTyv <- fresh
-    modify $ setenv t transTyv
+    transTyv <- getAndSetFresh t
     srcTyv <- getTyVar src
     dstTyv <- getTyVar dst
-    guardTyv <- genConstraints guard
-    resetTyv <- genConstraints reset
+    guardTyv <- getTyVar guard
+    resetTyv <- getTyVar reset
     let cs =
           [ resetTyv %>= guardTyv
           , srcTyv %>= guardTyv
@@ -340,13 +347,11 @@ instance GenConstraint Model where
           , t2@(Transition _ dest _ _) <- transitions
           , src == dest
           ]
-    let
-      constrainTransitions :: (Transition,Transition) -> State CGenState ()
-      constrainTransitions (t1,t2) = do
+    let constrainTransitions :: (Transition, Transition) -> State CGenState ()
+        constrainTransitions (t1, t2) = do
           ty1 <- getTyVar t1
           ty2 <- getTyVar t2
           addConstraint (ty1 %>= ty2)
     mapM_ constrainTransitions validTransPairings
     return tyModel
-
   getId = undefined
