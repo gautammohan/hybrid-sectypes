@@ -93,7 +93,11 @@ type Constraint = GenericConstraint TyVar
 (%>=) :: TyVar -> TyVar -> Constraint
 (%>=) v1 v2 = MkC v1 GreaterThan v2
 
-data Violation = Violation TyEnv [(TyVar,TyVar)] deriving (Show)
+-- | A Violation is any number of conflicting type variables that cannot be
+-- unified from the given values. Violations can be used in conjunction with
+-- TyEnvs to reconstruct detailed error messages.
+data Violation = Violation TyEnv (TyVar,Type) Constraint [Constraint] deriving (Show)
+
 
 -- | Only if we can definitively infer the type of a variable from a constraint,
 -- we return the assignment
@@ -110,23 +114,23 @@ solve env c@(MkC l _ r) =
 -- it is. If the constraint is invalid, return the two offending variables. If a
 -- constraint cannot be eliminated under the current environment, leave it
 -- untouched
-checkValid :: TyEnv -> Constraint -> Either (TyVar, TyVar) (Maybe Constraint)
+checkValid :: TyEnv -> Constraint -> Either Constraint (Maybe Constraint)
 checkValid env c@(MkC lv _ rv) =
   if lv == rv
     then Right Nothing --LHS = RHS
     else case (fmap (env !?) c) of
            MkC (Just (tl, _)) Equals (Just (tr, _)) ->
              if tl /= tr
-               then Left (lv, rv) --ty
+               then Left c
                else Right Nothing
            MkC (Just (tl, _)) GreaterThan (Just (tr, _)) ->
              if tl == Low && tr == High
-               then Left (lv, rv) --low cannot be greater than high
+               then Left c
                else Right Nothing
            otherwise -> Right (Just c)
 
 -- | simplify takes a list of constraints and recursively pops a solvable
--- constraint, solves it, and substitutes the result into the remaining
+  -- constraint, solves it, and substitutes the result into the remaining
 -- constraints repeatedly until no more solvable constraints remain. If a
 -- constraint cannot be substituted, this errors out
 simplify :: [Constraint] -> TyEnv -> Either Violation TyEnv
@@ -136,16 +140,19 @@ simplify cs env =
    in case (findSolvable cs) of
         Nothing -> Right env
         Just c ->
-          case violations of
-            [] -> simplify (catMaybes newCs) newEnv
-            otherwise -> Left (Violation env violations)
-          where Just res = solve env c --safe unwrap because findSolvable
-                                           --depends on solve
-                newEnv = (uncurry insert) res env
-                remainingCs = delete c cs
-                (violations, newCs) =
-                  partitionEithers . fmap (checkValid newEnv) $ remainingCs
+          case conflictingCs of
+            [] -> simplify remainingCs newEnv
+            otherwise -> Left (Violation env (substV, substTy) c conflictingCs)
+          where Just subst@(substV, (substTy, hist)) = solve env c
+                 --Note: unwrap is safe because findSolvable depends on solve
+                newEnv = (uncurry insert) subst env
+                (conflictingCs, validCs) =
+                  partitionEithers . fmap (checkValid newEnv) $ delete c cs
+                remainingCs = catMaybes validCs
 
+-- | Given a list of user-specified types of variables, add their definitions to
+-- the TyEnv, and return a mapping from the variables to the type variables
+-- created in the process
 genInitialEnvs :: [(Var,Type)] -> (TyEnv, CGenState)
 genInitialEnvs pairs =
   let initState = execState (mapM addVarToEnv pairs) emptyState
@@ -159,6 +166,18 @@ genInitialEnvs pairs =
       varTyv <- getTyVar v
       modify $ setenv v varTyv
 
+-- | Of the variables in Env, associate them with solved types from TyEnv if
+-- they exist. 
+getTypedVars :: Env -> TyEnv -> Map Var (Maybe Type)
+getTypedVars env tyenv =
+  env & map (\k -> tyenv !? k) & fmap (liftM fst) & filterWithKey removeNonVars &
+  mapKeys (\(VId v) -> v)
+  where
+    removeNonVars k v =
+      case k of
+        VId _ -> True
+        otherwise -> False
+
 -- | Given a model and an initial partial specification of variable security
 -- types, infer as many variable types as possible
 infer ::
@@ -167,23 +186,15 @@ infer ::
   -> [(Var, Type)]
   -> Either Violation (Map Var (Maybe Type))
 infer component initVarTypes =
-  let (initTyEnv, CGenState {constraints = constraints, env = env}) =
-        genInitialEnvs initVarTypes
-   in case simplify constraints initTyEnv of
-        Right tyenv -> Right $ getVarTypes env tyenv
+  let (initTyEnv, initST) = genInitialEnvs initVarTypes
+      CGenState {constraints = cs, env = e} =
+        execState (getTyVar component) initST
+   in case simplify cs initTyEnv of
+        Right tyenv -> Right $ getTypedVars e tyenv
         Left err -> Left err
     -- For each variable, if its type variable is in the TyEnv, replace it with
     -- the associated type. Otherwise return Nothing.
   where
-    getVarTypes :: Env -> TyEnv -> Map Var (Maybe Type)
-    getVarTypes e te =
-      e & map (\k -> te !? k) & fmap (liftM fst) & filterWithKey removeNonVars &
-      mapKeys (\(VId v) -> v)
-      where
-        removeNonVars k v =
-          case k of
-            VId _ -> True
-            otherwise -> False
 
 -- | Holds a constraint list and environment that get built up as we generate
 -- constraints for model components (that may recursively generate constraints
@@ -193,6 +204,7 @@ data CGenState = CGenState { env :: Env
                            , freshCounter :: Int -- ^tracks index to generate
                                                  -- fresh variables
                            } deriving (Show)
+
 
 -- | Helper function to update env with an (Id,Tyvar) entry
 setenv v tyv cgs = cgs {env = insert (getId v) tyv (env cgs)}
@@ -218,7 +230,7 @@ fresh = do
   where
     -- KLUDGE probably n^2 if we have to recompute this list every time
     letters = [1..] >>= flip replicateM ['a'..'z'] -- infinite stream of unique
-                                                   -- symbols
+              -- symbols
 
 -- | The @GenConstraint@ class describes how to identify a model component, and
 -- how to generate constraints between it and its subcomponents. The algorithm
@@ -238,6 +250,8 @@ getTyVar component = do
   e <- gets env
   maybe (genConstraints component) return (e !? getId component)
 
+-- | Get a fresh variable and associate it with the component being constrained
+-- in the Env
 getAndSetFresh :: (GenConstraint a) => a -> State CGenState TyVar
 getAndSetFresh component = do
   tyv <- fresh
@@ -247,7 +261,6 @@ getAndSetFresh component = do
 instance GenConstraint Var where
   genConstraints v = do
     tyv <- getAndSetFresh v
-    modify $ setenv v tyv
     return tyv
   getId = VId
 

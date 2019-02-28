@@ -42,12 +42,44 @@ spec = do
           f = Flow [a, a]
           st = getFinalSt (Mode "m" f)
       (freshCounter st - 1) `shouldBe` (length $ keys $ env st)
-  describe "Constraint Simplification Unit Tests" $ do
-    specify "One variable test" $ do
-      let a = Var "a"
-          user = [(a, High)]
-          result = infer a user
-      result `shouldSatisfy` isRight
-      let Right env = result
-      putStrLn $ show env
-      join (env !? a) `shouldBe` Just High
+    describe "Constraint Simplification Unit Tests" $ do
+      specify "One variable test" $ do
+        let a = Var "a"
+            user = [(a, High)]
+            result = infer a user
+        result `shouldSatisfy` isRight
+        let Right env = result
+        putStrLn $ show env
+        join (env !? a) `shouldBe` Just High
+      specify "Var implies another" $ do
+        let a = Var "a"
+            b = Var "b"
+            assn = Assignment a (Expr "b")
+            userspec = [(a, Low)]
+            result = infer assn userspec
+        result `shouldSatisfy` isRight
+        let Right env = result
+        putStrLn $ show result
+        join (env !? b) `shouldBe` Just Low
+      specify "Simple underconstrained" $ do
+        let a = Var "a"
+            b = Var "b"
+            c = Var "c"
+            e = Expr "b + c"
+            assn = Assignment a e
+            userspec = [(b,High)]
+            result = infer assn userspec
+        result `shouldSatisfy` isRight
+        let Right env = result
+        join (env !? a) `shouldBe` Just High
+        join (env !? c) `shouldBe` Nothing
+      specify "Simple violation" $ do
+        let a = Var "a"
+            b = Var "b"
+            e = Expr "b"
+            assn = Assignment a e
+            userspec = [(a,Low),(b,High)]
+            result = infer assn userspec
+        result `shouldSatisfy` isLeft
+        let Left violations = result
+        putStrLn $ show violations
