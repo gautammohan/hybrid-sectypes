@@ -82,4 +82,4 @@ spec = do
             result = infer assn userspec
         result `shouldSatisfy` isLeft
         let Left violations = result
-        putStrLn $ show violations
+        putStrLn $ violations

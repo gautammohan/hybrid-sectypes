@@ -12,25 +12,16 @@ possible given some initial specifications.
 module Inference where
 
 import Prelude hiding (map)
-import Data.Map
-  ( Map
-  , (!)
-  , (!?)
-  , empty
-  , filterWithKey
-  , fromList
-  , insert
-  , map
-  , mapKeys
-  , mapWithKey
-  )
+import Data.Map hiding (delete)
 import Control.Monad.State
 import ParseInternals (extractVars)
 import Text.Parsec (parse)
+
 import Data.Maybe (catMaybes, isJust)
-import Data.List (delete, find)
+import Data.List (intercalate, delete, find)
 import Data.Either
 import Data.Function ((&))
+import Data.Tuple
 
 import Model
 
@@ -95,9 +86,58 @@ type Constraint = GenericConstraint TyVar
 
 -- | A Violation is any number of conflicting type variables that cannot be
 -- unified from the given values. Violations can be used in conjunction with
--- TyEnvs to reconstruct detailed error messages.
-data Violation = Violation TyEnv (TyVar,Type) Constraint [Constraint] deriving (Show)
+-- TyEnvs to reconstruct detailed error messages. Note that these are only in
+-- terms of the type variables, to express the error messages in terms of model
+-- components the Env must be provided as well.
+data Violation =
+  Violation TyEnv --context
+            (TyVar, Type) --failing substitution
+            Constraint --constraint that produced the substitution
+            [Constraint] --constraints conflicting with the substitution
+  deriving (Show)
 
+type REnv = Map TyVar Id
+
+printConstraint :: REnv -> Constraint -> String
+printConstraint renv c = show $ fmap (renv !) c
+
+type History = [(TyVar,Type)]
+
+history :: TyEnv -> TyVar -> History
+history _ t@(TyVar "user'") = []
+history tyenv tyv =
+  let (ty, next) = tyenv ! tyv
+   in (tyv, ty) : history tyenv next
+
+printWithHist :: REnv -> (TyVar,Type) -> History -> String
+printWithHist renv pair@(tyv, ty) hist =
+  intercalate "\n\t" (printedHeader : printedHistory) ++ " (user specified)"
+
+  where
+    printedHeader = show (renv ! tyv) ++ " inferred as " ++ show ty
+    printedHistory =
+      fmap (\(tyv, ty) -> "from " ++ show (renv ! tyv) ++ ":" ++ show ty) hist
+
+printViolation :: REnv -> Violation -> String
+printViolation renv (Violation tyenv subst@(tyv, ty) inC conflictingCs) =
+  "Could not substitute " ++
+  show (renv ! tyv) ++
+  " with " ++
+  show ty ++
+  " in " ++
+  printConstraint renv inC ++
+  "\n\nDue to conflicting constraints:\n\n" ++
+  concatMap (printFailingConstraint renv tyenv) conflictingCs
+
+printFailingConstraint :: REnv -> TyEnv -> Constraint -> String
+printFailingConstraint renv tyenv c@(MkC vl _ vr) =
+  printConstraint renv c ++
+  " where " ++ "\n\n" ++ printWithHist' vl ++ "\n\n" ++ printWithHist' vr
+  where
+    printWithHist' :: TyVar -> String
+    printWithHist' = uncurry (printWithHist renv) . getTyAndHist
+    getTyAndHist :: TyVar -> ((TyVar, Type), History)
+    getTyAndHist t = ((t, fst $ tyenv ! t), history tyenv t)
 
 -- | Only if we can definitively infer the type of a variable from a constraint,
 -- we return the assignment
@@ -142,7 +182,7 @@ simplify cs env =
         Just c ->
           case conflictingCs of
             [] -> simplify remainingCs newEnv
-            otherwise -> Left (Violation env (substV, substTy) c conflictingCs)
+            otherwise -> Left (Violation newEnv (substV, substTy) c conflictingCs)
           where Just subst@(substV, (substTy, hist)) = solve env c
                  --Note: unwrap is safe because findSolvable depends on solve
                 newEnv = (uncurry insert) subst env
@@ -184,17 +224,18 @@ infer ::
      (GenConstraint a)
   => a
   -> [(Var, Type)]
-  -> Either Violation (Map Var (Maybe Type))
+  -> Either String (Map Var (Maybe Type))
 infer component initVarTypes =
   let (initTyEnv, initST) = genInitialEnvs initVarTypes
       CGenState {constraints = cs, env = e} =
         execState (getTyVar component) initST
    in case simplify cs initTyEnv of
         Right tyenv -> Right $ getTypedVars e tyenv
-        Left err -> Left err
+        Left violation -> Left (printViolation renv violation)
     -- For each variable, if its type variable is in the TyEnv, replace it with
     -- the associated type. Otherwise return Nothing.
-  where
+          where
+            renv = fromList . fmap swap . toList $ e
 
 -- | Holds a constraint list and environment that get built up as we generate
 -- constraints for model components (that may recursively generate constraints
