@@ -1,3 +1,6 @@
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE DeriveFunctor #-}
+
 {- |
 
 The Inference module implements security type inference on hybrid systems
@@ -6,8 +9,6 @@ simplification, and attempts to solve the security types of as many variables as
 possible given some initial specifications.
 
 -}
-
-{-# LANGUAGE DeriveFunctor #-}
 
 module Inference where
 
@@ -62,13 +63,13 @@ instance Show TyVar where
     "'" ++ s
 
 -- | Relations between type variables that our typing rules can generate
-data Op = Equals | GreaterThan deriving (Eq)
+data Op = Equals | GreaterThan deriving (Eq, Ord)
 instance Show Op where
   show Equals = "%=="
   show GreaterThan = "%>="
 
 -- | Constructor for generic constraints
-data GenericConstraint a = MkC a Op a deriving(Eq,Functor)
+data GenericConstraint a = MkC a Op a deriving(Eq,Functor, Ord)
 
 instance (Show a) => Show (GenericConstraint a) where
   show (MkC lhs op rhs) = show lhs ++ " " ++ show op ++ " " ++ show rhs
@@ -84,17 +85,16 @@ type Constraint = GenericConstraint TyVar
 (%>=) :: TyVar -> TyVar -> Constraint
 (%>=) v1 v2 = MkC v1 GreaterThan v2
 
+type CMap = Map Constraint Id
+
 -- | A Violation is any number of conflicting type variables that cannot be
 -- unified from the given values. Violations can be used in conjunction with
 -- TyEnvs to reconstruct detailed error messages. Note that these are only in
 -- terms of the type variables, to express the error messages in terms of model
 -- components the Env must be provided as well.
-data Violation =
-  Violation TyEnv --context
-            (TyVar, Type) --failing substitution
-            Constraint --constraint that produced the substitution
-            [Constraint] --constraints conflicting with the substitution
-  deriving (Show)
+data Violation = Violation TyEnv Id [Constraint]
+
+deriving instance (Show Violation)
 
 type REnv = Map TyVar Id
 
@@ -109,24 +109,22 @@ history tyenv tyv =
   let (ty, next) = tyenv ! tyv
    in (tyv, ty) : history tyenv next
 
+
 printWithHist :: REnv -> (TyVar,Type) -> History -> String
 printWithHist renv pair@(tyv, ty) hist =
   intercalate "\n\t" (printedHeader : printedHistory) ++ " (user specified)"
-
   where
     printedHeader = show (renv ! tyv) ++ " inferred as " ++ show ty
     printedHistory =
-      fmap (\(tyv, ty) -> "from " ++ show (renv ! tyv) ++ ":" ++ show ty) hist
+      fmap
+        (\(tyv, ty) -> "from " ++ show (renv ! tyv) ++ ":" ++ show ty)
+        (tail hist)
 
 printViolation :: REnv -> Violation -> String
-printViolation renv (Violation tyenv subst@(tyv, ty) inC conflictingCs) =
-  "Could not substitute " ++
-  show (renv ! tyv) ++
-  " with " ++
-  show ty ++
-  " in " ++
-  printConstraint renv inC ++
-  "\n\nDue to conflicting constraints:\n\n" ++
+printViolation renv (Violation tyenv cid conflictingCs) =
+  "In component" ++
+  show cid ++
+  " the following constraints could not be satisfied:\n\n" ++
   concatMap (printFailingConstraint renv tyenv) conflictingCs
 
 printFailingConstraint :: REnv -> TyEnv -> Constraint -> String
@@ -173,16 +171,16 @@ checkValid env c@(MkC lv _ rv) =
   -- constraint, solves it, and substitutes the result into the remaining
 -- constraints repeatedly until no more solvable constraints remain. If a
 -- constraint cannot be substituted, this errors out
-simplify :: [Constraint] -> TyEnv -> Either Violation TyEnv
-simplify [] env = Right env
-simplify cs env =
+simplify :: [Constraint] -> TyEnv -> CMap -> Either Violation TyEnv
+simplify [] env cmap = Right env
+simplify cs env cmap =
   let findSolvable = find $ isJust . (solve env)
    in case (findSolvable cs) of
         Nothing -> Right env
         Just c ->
           case conflictingCs of
-            [] -> simplify remainingCs newEnv
-            otherwise -> Left (Violation newEnv (substV, substTy) c conflictingCs)
+            [] -> simplify remainingCs newEnv cmap
+            otherwise -> Left (Violation newEnv (cmap ! c) conflictingCs)
           where Just subst@(substV, (substTy, hist)) = solve env c
                  --Note: unwrap is safe because findSolvable depends on solve
                 newEnv = (uncurry insert) subst env
@@ -207,7 +205,7 @@ genInitialEnvs pairs =
       modify $ setenv v varTyv
 
 -- | Of the variables in Env, associate them with solved types from TyEnv if
--- they exist. 
+-- they exist.
 getTypedVars :: Env -> TyEnv -> Map Var (Maybe Type)
 getTypedVars env tyenv =
   env & map (\k -> tyenv !? k) & fmap (liftM fst) & filterWithKey removeNonVars &
@@ -227,9 +225,9 @@ infer ::
   -> Either String (Map Var (Maybe Type))
 infer component initVarTypes =
   let (initTyEnv, initST) = genInitialEnvs initVarTypes
-      CGenState {constraints = cs, env = e} =
+      CGenState {constraints = cs, env = e, cmap = constraintmap} =
         execState (getTyVar component) initST
-   in case simplify cs initTyEnv of
+   in case simplify cs initTyEnv constraintmap of
         Right tyenv -> Right $ getTypedVars e tyenv
         Left violation -> Left (printViolation renv violation)
     -- For each variable, if its type variable is in the TyEnv, replace it with
@@ -242,7 +240,8 @@ infer component initVarTypes =
 -- from subcomponents).
 data CGenState = CGenState { env :: Env
                            , constraints :: [Constraint]
-                           , freshCounter :: Int -- ^tracks index to generate
+                           , cmap :: CMap
+                           , freshCounter :: Int --
                                                  -- fresh variables
                            } deriving (Show)
 
@@ -251,15 +250,22 @@ data CGenState = CGenState { env :: Env
 setenv v tyv cgs = cgs {env = insert (getId v) tyv (env cgs)}
 
 -- | Helper function to add a new constraint to the list of constraints
-addConstraint :: Constraint -> State CGenState ()
-addConstraint c = modify (\cgs -> cgs {constraints = c:(constraints cgs)})
+addConstraint :: (GenConstraint a) => Constraint -> a -> State CGenState ()
+addConstraint c comp = do
+  modify
+    (\cgs ->
+       cgs
+         { constraints = c : (constraints cgs)
+         , cmap = insert c (getId comp) (cmap cgs)
+         })
 
 -- | Add multiple constraints at once
-addConstraints :: [Constraint] -> State CGenState ()
-addConstraints = sequence_ . fmap addConstraint
+addConstraints :: (GenConstraint a) => [Constraint] -> a -> State CGenState ()
+addConstraints cs comp = sequence_ . fmap (flip addConstraint comp) $ cs
 
 -- | new state to begin generating constraints
-emptyState = CGenState {env = empty, constraints = [], freshCounter = 0}
+emptyState =
+  CGenState {env = empty, constraints = [], cmap = empty, freshCounter = 0}
 
 -- | Return a fresh type variable relative to the current constraints being
 -- generated
@@ -317,7 +323,7 @@ instance GenConstraint Expr where
     -- generate its constraints
     exprTyv <- getAndSetFresh expr
     varTyvs <- mapM getTyVar vars
-    addConstraints [exprTyv %>= varTyv | varTyv <- varTyvs]
+    addConstraints [exprTyv %>= varTyv | varTyv <- varTyvs] expr
     return exprTyv
   getId (Expr e) = EId e
 
@@ -327,7 +333,7 @@ instance GenConstraint Assignment where
     varTyv <- getTyVar v
     exprTyv <- getTyVar e
     let cs = [assnTyv %== varTyv, varTyv %>= exprTyv]
-    addConstraints cs
+    addConstraints cs assn
     return assnTyv
   getId (Assignment (Var v) (Expr e)) = AId (v ++ "=" ++ e)
 
@@ -336,7 +342,7 @@ instance GenConstraint Flow where
   genConstraints flow@(Flow assignments) = do
     flowTyv <- getAndSetFresh flow
     assnTyvs <- mapM genConstraints assignments
-    addConstraints [assnTyv %>= flowTyv | assnTyv <- assnTyvs]
+    addConstraints [assnTyv %>= flowTyv | assnTyv <- assnTyvs] flow
     return flowTyv
   getId (Flow assignments) = FId $ foldMap ((\(AId a) -> a) . getId) assignments
 
@@ -347,7 +353,7 @@ instance GenConstraint Mode where
   genConstraints m@(Mode _ flow) = do
     modeTyv <- getAndSetFresh m
     flowTyv <- getTyVar flow
-    addConstraint (modeTyv %== flowTyv)
+    addConstraint (modeTyv %== flowTyv) m
     return modeTyv
   getId (Mode name _) = MId name
 
@@ -355,7 +361,7 @@ instance GenConstraint Guard where
   genConstraints guard@(Guard e) = do
     guardTyv <- getAndSetFresh guard
     exprTyv <- getTyVar e
-    addConstraint (guardTyv %== exprTyv)
+    addConstraint (guardTyv %== exprTyv) guard
     return guardTyv
 
   getId = (\(EId e) -> GId e) . getId
@@ -364,7 +370,7 @@ instance GenConstraint Reset where
   genConstraints reset@(Reset exprs) = do
     resetTyv <- getAndSetFresh reset
     exprTyvs <- mapM genConstraints exprs
-    addConstraints [exprTyv %>= resetTyv | exprTyv <- exprTyvs]
+    addConstraints [exprTyv %>= resetTyv | exprTyv <- exprTyvs] reset
     return resetTyv
 
   getId = (\(AId assns) -> RId assns) . getId
@@ -385,7 +391,7 @@ instance GenConstraint Transition where
           , dstTyv %>= guardTyv
           , transTyv %== guardTyv
           ]
-    addConstraints cs
+    addConstraints cs t
     return transTyv
 
   getId (Transition (Mode srcname _) (Mode dstname _) _ _) =
@@ -405,7 +411,7 @@ instance GenConstraint Model where
         constrainTransitions (t1, t2) = do
           ty1 <- getTyVar t1
           ty2 <- getTyVar t2
-          addConstraint (ty1 %>= ty2)
+          addConstraint (ty1 %>= ty2) m
     mapM_ constrainTransitions validTransPairings
     return tyModel
   getId = undefined

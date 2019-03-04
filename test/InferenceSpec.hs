@@ -83,3 +83,17 @@ spec = do
         result `shouldSatisfy` isLeft
         let Left violations = result
         putStrLn $ violations
+      specify "Less simple violation" $ do
+        let a = Var "a"
+            b = Var "b"
+            c = Var "c"
+            b' = Expr "b + a"
+            c' = Expr "c + a"
+            assn1 = Assignment a b'
+            assn2 = Assignment b c'
+            flo = Flow [assn1,assn2]
+            userspec = [(a,Low),(c,High)]
+            result = infer flo userspec
+        result `shouldSatisfy` isLeft
+        let Left violations = result
+        putStrLn $ violations
