@@ -18,7 +18,7 @@ import ParseInternals (extractVars)
 
 import Data.Map (member, filterWithKey, mapKeys, Map, empty, (!?), insert, map)
 import Data.Maybe (mapMaybe, isJust)
-import Data.List (delete, find)
+import Data.List (nub, delete, find)
 import Data.Graph.Inductive (Gr, LNode, Node, Edge, DynGraph)
 import qualified Data.Set as S
 
@@ -75,16 +75,13 @@ data CGenState = CGenState { nmap :: NodeMap
                            , counter :: Node -- ^tracks fresh nodes
                            } deriving (Show)
 
-seen :: Component -> State CGenState Bool
-seen c = (member c) <$> (gets nmap)
-
 -- | Helper function to add a new constraint to the list of constraints
 addConstraint :: Constraint -> State CGenState ()
 addConstraint c = modify (\cgs -> cgs {constraints = c:(constraints cgs)})
 
--- | Add multiple constraints at once
+-- | Add multiple constraints at once (pruning duplicates)
 addConstraints :: [Constraint] -> State CGenState ()
-addConstraints = sequence_ . fmap addConstraint
+addConstraints = sequence_ . fmap addConstraint . nub
 
 -- | new state to begin generating constraints
 emptyState = CGenState {nmap = empty, constraints = [], counter = 0}
@@ -129,7 +126,7 @@ genConstraints c = do
            CFlow f@(Flow as) -> do
              mapM_ (genConstraints . CAssn) as
              recordNode (CFlow f)
-             addConstraints [CAssn a %>= CFlow f | a <- as]
+             addConstraints $ nub [CAssn a %>= CFlow f | a <- as]
            CMode m@(Mode _ f) -> do
              genConstraints (CFlow f)
              recordNode (CMode m)

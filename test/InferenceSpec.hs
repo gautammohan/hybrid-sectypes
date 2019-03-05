@@ -30,14 +30,14 @@ spec = do
       let a = Assignment (Var "x2_dot") (Expr "-0.02*x2")
           f = genConstraints (CFlow $ Flow [a, a])
           (_, st) = runState f emptyState
-      (counter st) `shouldBe` 7 --2 vars, 2 exprs, 2 assignments, 1 flow
-      length (constraints st) `shouldBe` 8 -- 2 * (2 * var/expr), 2 assn/expr, 2 flow/expr
+      (counter st) `shouldBe` 5 -- flow relates to assn + 3 assn constraints
+      length (constraints st) `shouldBe` 4
     specify "modes" $ do
       let a = Assignment (Var "x2_dot") (Expr "-0.02*x2")
           f = Flow [a, a]
           m = genConstraints (CMode $ Mode "m" f)
           (_, st) = runState m emptyState
-      (counter st) `shouldBe` 8 -- 2 vars, 2 exprs, 2 assignments, 1 flow, 1 mode
-      length (constraints st) `shouldBe` 9 -- flows + 1
+      (counter st) `shouldBe` 6 -- 2 vars, 2 exprs, 2 assignments, 1 flow, 1 mode
+      length (constraints st) `shouldBe` 5 -- mode relates to flow + 4 assn
     specify "transitions" $ do pending
     specify "models" $ do pending
