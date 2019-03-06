@@ -39,5 +39,4 @@ spec = do
           (_, st) = runState m emptyState
       (counter st) `shouldBe` 6 -- 2 vars, 2 exprs, 2 assignments, 1 flow, 1 mode
       length (constraints st) `shouldBe` 5 -- mode relates to flow + 4 assn
-    specify "transitions" $ do pending
-    specify "models" $ do pending
+  describe ""

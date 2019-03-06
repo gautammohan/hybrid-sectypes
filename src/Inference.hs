@@ -16,11 +16,12 @@ import Prelude hiding (map)
 import Model
 import ParseInternals (extractVars)
 
-import Data.Map (member, filterWithKey, mapKeys, Map, empty, (!?), insert, map)
-import Data.Maybe (mapMaybe, isJust)
+import Data.Map (fromList, keys, (!), toList, member, filterWithKey, mapKeys, Map, empty, (!?), insert, map)
+import Data.Maybe (fromJust, mapMaybe, isJust)
 import Data.List (nub, delete, find)
-import Data.Graph.Inductive (Gr, LNode, Node, Edge, DynGraph)
+import Data.Graph.Inductive (scc, LPath(LP), lesp, esp, lab, LPath, DynGraph, Edge, Gr, LNode, Node, UEdge, mkGraph)
 import qualified Data.Set as S
+import Data.Tuple
 
 import Text.Parsec (parse)
 
@@ -30,7 +31,7 @@ import Control.Monad.State
 data Type
   = High
   | Low
-  deriving (Show, Read, Eq)
+  deriving (Show, Read, Eq, Ord)
 
 data Component
   = CVar Var
@@ -42,6 +43,7 @@ data Component
   | CReset Reset
   | CTrans Transition
   | CModel Model
+  | CTy Type
   deriving (Eq, Show, Ord)
 
 type DepGraph = Gr Component ()
@@ -83,9 +85,11 @@ addConstraint c = modify (\cgs -> cgs {constraints = c:(constraints cgs)})
 addConstraints :: [Constraint] -> State CGenState ()
 addConstraints = sequence_ . fmap addConstraint . nub
 
--- | new state to begin generating constraints
+-- | New state to begin generating constraints
 emptyState = CGenState {nmap = empty, constraints = [], counter = 0}
 
+-- | Given an (unseen) component, associate it with a fresh node and record that
+-- association in the node map.
 recordNode :: Component -> State CGenState ()
 recordNode c = do
   e <- gets nmap
@@ -157,3 +161,85 @@ genConstraints c = do
                , t2@(Transition _ dest _ _) <- ts
                , src == dest
                ]
+           (CTy _ ) -> return ()
+
+-- | For each component we have seen, we need to ensure they are leq High and
+-- geq Low. These constraints are trivial since High and Low represent Top and
+-- Bottom of our security annotations.
+addHighLowConstraints :: State CGenState ()
+addHighLowConstraints = do
+  components <- liftM keys $ gets nmap
+  addConstraints $ [CTy High %>= c | c <- components]
+  addConstraints $ [c %>= CTy Low | c <- components]
+
+-- | Given a mapping of Components to nodes and a list of unique constraints
+-- between components, create a dependency graph where nodes are labeled with
+-- components, and a directed edge (a,b) represents that a must have a lower
+-- security type than b.
+buildDepGraph :: NodeMap -> [Constraint] -> DepGraph
+buildDepGraph nmap cs = mkGraph nodes vertices
+  where
+    nodes = fmap swap . toList $ nmap
+    vertices = concatMap (mkedge . fmap (nmap !)) cs
+    mkedge (MkConstraint n1 Equals n2) = [(n1, n2, ()), (n2, n1, ())]
+    mkedge (MkConstraint n1 GreaterThan n2) = [(n2,n1, ())]
+
+-- | Convert initial variable annotations by user into constraints
+addUserAnnotations :: [(Var,Type)] -> State CGenState ()
+addUserAnnotations = addConstraints . fmap (\(v,ty) -> CVar v %== CTy ty)
+
+-- | Given a "Component" and a list of user annotations, compute the constraints
+-- for the components, Bottom/Top, and user types, and build a graph out of the
+-- resulting constraints and subcomponents
+inferDepGraph :: Component -> [(Var,Type)] -> DepGraph
+inferDepGraph c vs =
+  let inferSteps = do
+        recordNode (CTy High)
+        recordNode (CTy Low)
+        genConstraints c
+        addHighLowConstraints
+        addUserAnnotations vs
+      CGenState{nmap = nodemap, constraints = cs} = execState inferSteps emptyState
+  in
+    buildDepGraph nodemap cs
+
+data Violation = Violation DepGraph (LPath ()) deriving(Show)
+
+type CTyMap = Map Component Type
+type Remainder = [Component]
+
+-- | Check if a DepGraph is valid. If there exists a path from High to Low,
+-- report the shortest such path as a violation. Otherwise, return a typing map
+-- from Components to their types. Any components whose types are unspecified
+-- are remainders, all components that must have the same (unspecified) type are
+-- in the same remainder.
+checkDepGraph :: DepGraph -> Either Violation (CTyMap, [Remainder])
+checkDepGraph g = let
+  high = 0
+  low = 1
+  in
+    case (lesp high low g) of
+      LP [] -> Right (getComponentTypes g)
+      path -> Left (Violation g path)
+  where
+
+-- | Extract the SCCs containing High and Low to find all components of that
+-- type and convert it to a mapping from Component to type. Any other SCCs
+-- represent components that must have the same type, but their type was not
+-- determined from the partial specification. These untyped groupings are
+-- "remainders" in a list.
+getComponentTypes :: DepGraph -> (CTyMap, [Remainder])
+getComponentTypes g = (tymap, remainder sccs)
+  where
+    tymap = fromList (mkPairs hscc High ++ mkPairs lscc Low)
+    remainder :: [[Node]] -> [[Component]] --and remove High and Low SCCs
+    remainder sccs = (fmap . fmap) (unsafelab g) $ delete hscc . delete lscc $ sccs
+    ------
+    mkPairs :: [Node] -> Type -> [(Component, Type)]
+    mkPairs ns ty = fmap (\n -> (unsafelab g $ n, ty)) ns
+    unsafelab g = fromJust . lab g
+    -------
+    sccs = scc g
+    getSCCWith n = head $ filter (n `elem`) sccs
+    hscc = getSCCWith 0
+    lscc = getSCCWith 1
