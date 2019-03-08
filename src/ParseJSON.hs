@@ -15,7 +15,7 @@ import Model
 import ParseInternals
 
 import Text.Parsec
-import Data.Aeson
+import Data.Aeson hiding (parse)
 import Data.ByteString.Lazy.UTF8 (fromString)
 import Data.Text (unpack)
 
@@ -27,7 +27,7 @@ instance FromJSON Flow where
     do
       case parse assignments "" (unpack t) of
         Right assns -> pure $ Flow assns
-        Left err -> fail $ show err
+        Left err -> fail $ show err ++ " in " ++ show t
 
 instance FromJSON Mode where
   parseJSON = withObject "mode object" $ \o ->
@@ -36,7 +36,7 @@ instance FromJSON Mode where
       label <- o .: "flow"
       case parse flow "" label of
         Right f -> pure $ Mode n f
-        Left err -> fail $ show err
+        Left err -> fail $ show err ++ " in " ++ show label
 
 instance FromJSON Transition where
   parseJSON = withObject "transition object" $ \o ->
@@ -46,7 +46,7 @@ instance FromJSON Transition where
       dest <- parseJSON =<< o .: "dest"
       case parse transition "" label of
         Right (guard,reset) -> pure $ Transition src dest guard reset
-        Left err -> fail $ show err
+        Left err -> fail $ show err ++ " in " ++ show label
 
 instance FromJSON Model where
   parseJSON = withObject "model object" $ \o ->
