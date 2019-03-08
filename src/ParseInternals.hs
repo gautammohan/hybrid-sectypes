@@ -64,7 +64,7 @@ assignments = assignment `sepEndBy` assignmentSep
 
 flowHeader :: Parsec String () ()
 flowHeader =
-  skipMany (alphaNum <|> space <|> newline <|> char '_') >> char ':' >>
+  skipMany (alphaNum <|> space <|> newline <|> char '_') >> skipMany (char ':') >>
   skipMany newline <?> "expected flowheader"
 
 -- | Flow is of the form: \"FlowHeader: assignments...\". Make sure we get rid
