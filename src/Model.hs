@@ -9,10 +9,7 @@ module Model where
 type Name = String
 
 -- | @Var@s correspond to variables in hybrid systems.
-newtype Var = Var String deriving (Ord, Eq)
-
-instance Show Var where
-  show (Var s) = s
+newtype Var = Var String deriving (Ord, Eq, Show)
 
 -- | @Expr@s are represented as strings as currently we do not parse the
 -- mathematical expressions inside them.

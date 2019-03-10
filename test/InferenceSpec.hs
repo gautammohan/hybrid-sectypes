@@ -69,14 +69,12 @@ spec = do
         let Right (m, r) = result
         m !? (CVar a) `shouldBe` Nothing
       specify "Invalid typing: a = a + b, a:Low b:High" $ do
-        let g =
-              inferDepGraph (CAssn (Assignment a aplusb)) [(a, Low), (b, High)]
+        let g = inferDepGraph (CAssn (Assignment a aplusb)) [(a, Low), (b, High)]
             result = checkDepGraph g
         result `shouldSatisfy` isLeft
       specify "Harder Inference: a = a + b, c = a + c, c:low" $ do
         let g =
-              inferDepGraph
-                (CFlow (Flow [Assignment a aplusb, Assignment c aplusc]))
+              inferDepGraph (CFlow (Flow [Assignment a aplusb, Assignment c aplusc]))
                 [(c, Low)]
             result = checkDepGraph g
         result `shouldSatisfy` isRight
