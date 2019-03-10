@@ -53,9 +53,7 @@ assignment = do
   e <- (many $ noneOf "=") *> char '=' *> expr
   return (Assignment v e)
 
-assignmentSep :: Parsec String () String
-assignmentSep =
-  choice $ map try [string ";\n ", string ";\n", string "; ", string ";"]
+assignmentSep = string ";" >> many (char ' ' <|> char '\n')
 
 -- | Assignments are valid MATLAB arithmetic syntax separated by
 -- spaces\/newlines\/semicolons.

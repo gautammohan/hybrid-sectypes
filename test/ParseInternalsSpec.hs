@@ -63,3 +63,23 @@ spec = do
          ( Guard (Expr "")
          , Reset
              [Assignment (Var "x") (Expr "0"), Assignment (Var "y") (Expr "0")]))
+    it "parses a Flow with different separators / double newlines" $ do
+      let ftext =
+            "ModeB5\ndu:\nzb_dot = 1;\nVa_dot = fa; Va_out = Va; fa_dot = 0; fa_out = fa;\n\nVb_dot = fb; Vb_out = Vb; fb_dot = 0; fb_out = fb;\n\nVc_dot = fc; Vc_out = Vc; fc_dot = 0; fc_out = fc;\n\n\n"
+      (parse' flow ftext) @=?
+        Right
+          (Flow
+             [ Assignment (Var "zb_dot") (Expr "1")
+             , Assignment (Var "Va_dot") (Expr "fa")
+             , Assignment (Var "Va_out") (Expr "Va")
+             , Assignment (Var "fa_dot") (Expr "0")
+             , Assignment (Var "fa_out") (Expr "fa")
+             , Assignment (Var "Vb_dot") (Expr "fb")
+             , Assignment (Var "Vb_out") (Expr "Vb")
+             , Assignment (Var "fb_dot") (Expr "0")
+             , Assignment (Var "fb_out") (Expr "fb")
+             , Assignment (Var "Vc_dot") (Expr "fc")
+             , Assignment (Var "Vc_out") (Expr "Vc")
+             , Assignment (Var "fc_dot") (Expr "0")
+             , Assignment (Var "fc_out") (Expr "fc")
+             ])
