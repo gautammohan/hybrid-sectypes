@@ -1,7 +1,7 @@
 function [] = exportSLSFModel(modelfile,outfile)
 
     open(modelfile);
-    chart = find(sfroot,'-isa','Stateflow.Chart');
+    chart = find(sfroot,'-isa','Stateflow.Chart','-and','-regexp','Path',modelfile);
 
     j = slsf2json(chart);
     fid = fopen([outfile '.json'],'wt');
