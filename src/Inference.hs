@@ -7,8 +7,13 @@ possible given some initial specifications.
 
 -}
 
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Inference where
 
@@ -50,28 +55,13 @@ import Control.Monad.State
 -- | High security types are for secret data, Low can be observed publically
 data Type
   = High
-
   | Low
   deriving (Show, Read, Eq, Ord)
 
-data Component
-  = CTy Type
-  | CVar Var
-  | CExpr Expr
-  | CAssn Assignment
-  | CFlow Flow
-  | CMode Mode
-  | CGuard Guard
-  | CReset Reset
-  | CTrans Transition
-  | CModel Model
-  deriving (Eq, Show, Ord)
+data NLabel = LTy Type | LComp AnyC deriving (Show, Eq, Ord)
 
-type DepGraph = Gr Component Component
-
-type NodeMap = Map Component Node
-
-data GenericConstraint a = MkConstraint a Op a deriving (Eq, Ord, Functor)
+type DepGraph = Gr NLabel NLabel
+type NodeMap = Map NLabel Node
 
 -- | Relations between CExprs that our typing rules can generate
 data Op = Equals | GreaterThan deriving (Eq, Ord)
@@ -79,55 +69,67 @@ instance Show Op where
   show Equals = "=="
   show GreaterThan = ">="
 
+data GenericConstraint a = MkConstraint a Op a deriving (Eq, Ord, Functor)
+
 instance (Show a) => Show (GenericConstraint a) where
   show (MkConstraint lhs op rhs) = show lhs ++ " " ++ show op ++ " " ++ show rhs
 
-type Constraint = GenericConstraint Component
+type Constraint = GenericConstraint NLabel
 
-(%==) :: Component -> Component -> Constraint
-(%==) c1 c2 = MkConstraint c1 Equals c2
+(%==) :: (Sing l, Sing l2) => Component l -> Component l2 -> Constraint
+(%==) c1 c2 = MkConstraint (LComp (AnyC c1)) Equals (LComp (AnyC c2))
 
-(%>=) :: Component -> Component -> Constraint
-(%>=) c1 c2 = MkConstraint c1 GreaterThan c2
+(%>=) :: (Sing l, Sing l2) => Component l -> Component l2 -> Constraint
+(%>=) c1 c2 = MkConstraint (LComp (AnyC c1)) GreaterThan (LComp (AnyC c2))
 
-type CMap = Map Constraint Component
+type CMap = Map Constraint NLabel
 
 -- | Holds a constraint list and environment that get built up as we generate
--- constraints for model components (that may recursively generate constraints
+  -- constraints for model components (that may recursively generate constraints
 -- from subcomponents).
 data CGenState = CGenState { nmap :: NodeMap
                            , constraints :: [Constraint]
                            , cmap :: CMap
                            , counter :: Node -- ^tracks fresh nodes
-                           } deriving (Show)
+                           }
+
+deriving instance Show CGenState
 
 -- | Helper function to add a new constraint to the list of constraints
-addConstraint :: Constraint -> Component -> State CGenState ()
-addConstraint c comp = do
+addConstraint :: (Sing l) => Constraint -> Component l -> State CGenState ()
+addConstraint constraint component = do
   modify
     (\cgs ->
        cgs
-         { constraints = c : (constraints cgs)
-         , cmap = insert c comp (cmap cgs)
+         { constraints = constraint : (constraints cgs)
+         , cmap = insert constraint (LComp (AnyC component)) (cmap cgs)
          })
 
 -- | Add multiple constraints at once
-addConstraints :: [Constraint] -> Component -> State CGenState ()
+addConstraints :: (Sing l) => [Constraint] -> Component l -> State CGenState ()
 addConstraints cs comp = sequence_ . fmap (flip addConstraint comp) $ cs
 
-emptyState :: CGenState
 -- | New state to begin generating constraints
+emptyState :: CGenState
 emptyState =
   CGenState {nmap = empty, constraints = [], cmap = empty, counter = 0}
 
 -- | Given an (unseen) component, associate it with a fresh node and record that
 -- association in the node map.
-recordNode :: Component -> State CGenState ()
+recordNode :: (Sing l) => Component l -> State CGenState ()
 recordNode c = do
   e <- gets nmap
   n <- gets counter
-  modify $ \cgs -> cgs {counter = n + 1, nmap = insert c n e}
+  modify $ \cgs -> cgs {counter = n + 1, nmap = insert (LComp (AnyC c)) n e}
   return ()
+
+recordTy :: Type -> State CGenState ()
+recordTy ty = do
+  e <- gets nmap
+  n <- gets counter
+  modify $ \cgs -> cgs {counter = n + 1, nmap = insert (LTy ty) n e}
+  return ()
+
 
 -- | Generate constraints for a "Component". We track the state as the
 -- constraints are generated, and append constraints to a global list. When we
@@ -138,66 +140,63 @@ recordNode c = do
 -- of its subcomponents (i.e. generating constraints for the LHS var and RHS
 -- expr in an Assignment). If we have seen any of the subcomponents before, the
 -- recursion ends.
-genConstraints :: Component -> State CGenState ()
+genConstraints :: (Sing l) => Component l -> State CGenState ()
 genConstraints c = do
   e <- gets nmap
-  if member c e
+  if member (LComp (AnyC c)) e
     then return ()
     else case c of
-           c@(CVar _) -> recordNode c
-           ce@(CExpr (Expr e)) ->
+           CVar _ -> recordNode c
+           ce@(CExpr e) ->
              let vars =
                    case parse extractVars "" e of
                      Left _ ->
                        error "could not extract variables from expression"
-                     Right vars' -> fmap (CVar) vars'
+                     Right vars' -> vars'
               in do recordNode ce
                     mapM_ genConstraints vars
                     addConstraints' [ce %>= v | v <- vars]
-           CAssn assn@(Assignment v e) -> do
-             genConstraints (CExpr e)
-             genConstraints (CVar v)
-             recordNode (CAssn assn)
-             addConstraints' [CAssn assn %== CVar v, CVar v %>= CExpr e]
-           CFlow f@(Flow as) -> do
-             mapM_ (genConstraints . CAssn) as
-             recordNode (CFlow f)
-             addConstraints' $ nub [CAssn a %>= CFlow f | a <- as]
-           CMode m@(Mode _ f) -> do
-             genConstraints (CFlow f)
-             recordNode (CMode m)
-             addConstraint' $ CMode m %== CFlow f
-           CGuard g@(Guard e) -> do
-             genConstraints (CExpr e)
-             recordNode (CGuard g)
-             addConstraint' $ CGuard g %== CExpr e
-           CReset r@(Reset as) -> do
-             mapM_ (genConstraints . CAssn) as
-             recordNode (CReset r)
-             addConstraints' [CAssn a %>= CReset r | a <- as]
-           CTrans t@(Transition src dst g r) -> do
-             mapM_ genConstraints [CMode src, CMode dst, CGuard g, CReset r]
-             recordNode (CTrans t)
+           a@(CAssignment v e) -> do
+             genConstraints e
+             genConstraints v
+             recordNode a
+             addConstraints' [a %== v, v %>= e]
+           f@(CFlow as) -> do
+             mapM_ genConstraints as
+             recordNode f
+             addConstraints' $ nub [a %>= f | a <- as]
+           m@(CMode _ f) -> do
+             genConstraints f
+             recordNode m
+             addConstraint' $ m %== f
+           g@(CGuard e) -> do
+             genConstraints e
+             recordNode g
+             addConstraint' $ g %== e
+           r@(CReset as) -> do
+             mapM_ genConstraints as
+             recordNode r
+             addConstraints' [a %>= r | a <- as]
+           t@(CTransition src dst g r) -> do
+             genConstraints src
+             genConstraints dst
+             genConstraints g
+             genConstraints r
+             recordNode t
+             addConstraints' [r %>= g, src %>= g, dst %>= g, t %== g]
+           CModel ms ts -> do
+             mapM_ genConstraints ms
+             mapM_ genConstraints ts
              addConstraints'
-               [ CReset r %>= CGuard g
-               , CMode src %>= CGuard g
-               , CMode dst %>= CGuard g
-               , CTrans t %== CGuard g
-               ]
-           (CModel (Model ms ts)) -> do
-             mapM_ (genConstraints . CMode) ms
-             mapM_ (genConstraints . CTrans) ts
-             addConstraints'
-               [ CTrans t1 %>= CTrans t2
-               | t1@(Transition src _ _ _) <- ts
-               , t2@(Transition _ dest _ _) <- ts
+               [ t1 %>= t2
+               | t1@(CTransition src _ _ _) <- ts
+               , t2@(CTransition _ dest _ _) <- ts
                , src == dest
                ]
-           (CModel (Parallel _)) -> error "Undefined genconstraints for Parallel models"
-           (CTy _ ) -> return ()
-    where
-      addConstraint' = flip addConstraint c
-      addConstraints' = flip addConstraints c
+           (CParallel _) -> error "Undefined genconstraints for Parallel models"
+  where
+    addConstraint' = flip addConstraint c
+    addConstraints' = flip addConstraints c
 
 -- | For each component we have seen, we need to ensure they are leq High and
 -- geq Low. These constraints are trivial since High and Low represent Top and
@@ -205,8 +204,12 @@ genConstraints c = do
 addHighLowConstraints :: State CGenState ()
 addHighLowConstraints = do
   components <- liftM keys $ gets nmap
-  addConstraints ([CTy High %>= c | c <- components]) (CTy High)
-  addConstraints ([c %>= CTy Low | c <- components]) (CTy Low)
+  addConstraints
+    ([MkConstraint (LTy High) GreaterThan c | c <- components])
+    (CVar "Dummy'")
+  addConstraints
+    ([MkConstraint c GreaterThan (LTy Low) | c <- components])
+    (CVar "Dummy'")
 
 -- | Given a mapping of Components to nodes and a list of unique constraints
 -- between components, create a dependency graph where nodes are labeled with
@@ -229,16 +232,18 @@ buildDepGraph nmap cmap cs = mkGraph nodes vertices
 -- | Convert initial variable annotations by user into constraints
 addUserAnnotations :: [(Var,Type)] -> State CGenState ()
 addUserAnnotations vs =
-  addConstraints (fmap (\(v, ty) -> CVar v %== CTy ty) vs) (CVar (Var "user'"))
+  addConstraints
+    (fmap (\(v, ty) -> MkConstraint (LComp (AnyC v)) Equals (LTy ty)) vs)
+    (CVar "user'")
 
 -- | Given a "Component" and a list of user annotations, compute the constraints
 -- for the components, Bottom/Top, and user types, and build a graph out of the
 -- resulting constraints and subcomponents
-inferDepGraph :: Component -> [(Var,Type)] -> DepGraph
+inferDepGraph :: (Sing l) => Component l -> [(Var,Type)] -> DepGraph
 inferDepGraph c vs =
   let inferSteps = do
-        recordNode (CTy High) --top
-        recordNode (CTy Low) --bottom
+        recordTy High --top
+        recordTy Low --bottom
         genConstraints c
         addHighLowConstraints
         addUserAnnotations vs
@@ -246,10 +251,12 @@ inferDepGraph c vs =
         execState inferSteps emptyState
    in buildDepGraph nodemap cmap cs
 
-data Violation = Violation [(Component,Component)] deriving(Show)
+data Violation = Violation [(AnyC, AnyC)]
 
-type CTyMap = Map Component Type
-type Remainder = [Component]
+deriving instance Show Violation
+
+type CTyMap = Map AnyC Type
+type Remainder = [AnyC]
 
 -- | Check if a DepGraph is valid. If there exists a path from High to Low,
 -- report the shortest such path as a violation. Otherwise, return a typing map
@@ -257,15 +264,18 @@ type Remainder = [Component]
 -- are remainders, all components that must have the same (unspecified) type are
 -- in the same remainder.
 checkDepGraph :: DepGraph -> Either Violation (CTyMap, [Remainder])
-checkDepGraph g = let
-  high = 0
-  low = 1
-  in
-    case (lesp high low g) of
-      LP [] -> Right (getComponentTypes g)
-      LP path -> Left (Violation (fmap lookup path))
-        where
-          lookup (n,e) = (fromJust $ lab g n, e)
+checkDepGraph g =
+  let high = 0
+      low = 1
+   in case (lesp high low g) of
+        LP [] -> Right (getComponentTypes g)
+        LP path -> Left (Violation (fmap lookup path))
+          where extract (LComp c, LComp d) = (c, d)
+                extract (LComp c, LTy _) = (c, AnyC (CVar "user'"))
+                extract (LTy _, LComp c) = (AnyC (CVar "user'"),c)
+                extract (LTy _, LTy _) =
+                  (AnyC (CVar "dummy what"), AnyC (CVar "dummy what"))
+                lookup (n, e) = extract (fromJust $ lab g n, e)
 
 -- | Extract the SCCs containing High and Low to find all components of that
 -- type and convert it to a mapping from Component to type. Any other SCCs
@@ -278,22 +288,29 @@ getComponentTypes g = (tymap, remainder sccs)
     -- Find all components that are either high or low
     tymap = fromList (mkPairs hscc High ++ mkPairs lscc Low)
     -- And group the remaining untyped components as remainders
-    remainder :: [[Node]] -> [[Component]]
+    remainder :: [[Node]] -> [[AnyC]]
     remainder sccs =
       (fmap . fmap) (unsafelab g) $ delete hscc . delete lscc $ sccs
     -------
-    mkPairs :: [Node] -> Type -> [(Component, Type)]
+    mkPairs :: [Node] -> Type -> [(AnyC, Type)]
     mkPairs ns ty = fmap (\n -> (unsafelab g $ n, ty)) ns
-    unsafelab g = fromJust . lab g
+    unsafelab g = extract . fromJust . lab g
+    extract (LComp c) = c
+    extract (LTy _) = (AnyC (CVar "Dummy"))
     -------
     sccs = scc g
     getSCCWith n = head $ filter (n `elem`) sccs
     hscc = getSCCWith 0
     lscc = getSCCWith 1
 
+
 type VarTypes = Map Var Type
 
-inferVars :: Component -> [(Var,Type)] -> Either Violation (VarTypes,[[Var]])
+inferVars ::
+     (Sing l)
+  => Component l
+  -> [(Var, Type)]
+  -> Either Violation (VarTypes, [[Var]])
 inferVars c anns =
   case checkDepGraph . (flip inferDepGraph anns) $ c of
     Left violation -> Left violation
@@ -305,6 +322,8 @@ inferVars c anns =
         -- extract only the variables from the Component remainders
         remainderVars = fmap (fmap unwrap . filter onlyVars) remainder
   where
-    unwrap (CVar v) = v
-    onlyVars (CVar _) = True
+    unwrap :: AnyC -> Var
+    unwrap (AnyC v@(CVar _)) = v
+    unwrap _ = error "This should never happen"
+    onlyVars (AnyC (CVar _)) = True
     onlyVars _ = False

@@ -4,28 +4,30 @@ SimpleModel is a carefully hand-coded structure meant to mirror simple_model.slx
 
 -}
 
+{-# OPTIONS_GHC -fno-warn-missing-signatures #-}
+
 module SimpleModel (simpleModel) where
 
 import Model
 
-x1 = Var "x1"
-x1_out = Var "x1_out"
-x1_dot = Var "x1_dot"
+x1 = CVar "x1"
+x1_out = CVar "x1_out"
+x1_dot = CVar "x1_dot"
 
-e1 = Expr "-0.01*x1"
-e2 = Expr "-0.01*(x1-100)"
-e3 = Expr "x1"
+e1 = CExpr "-0.01*x1"
+e2 = CExpr "-0.01*(x1-100)"
+e3 = CExpr "x1"
 
-emptyAssn = Assignment (Var "") (Expr "")
+emptyAssn = CAssignment (CVar "") (CExpr "")
 
-off1 = Mode "Off1" (Flow [Assignment x1_dot e1, Assignment x1_out e3])
-on1 = Mode "On1" (Flow [Assignment x1_dot e2, Assignment x1_out e3])
-start = Mode "InitialTransition" (Flow [])
+off1 = CMode "Off1" (CFlow [CAssignment x1_dot e1, CAssignment x1_out e3])
+on1 = CMode "On1" (CFlow [CAssignment x1_dot e2, CAssignment x1_out e3])
+start = CMode "InitialTransition" (CFlow [])
 
-t1 = Transition start on1 (Guard (Expr "")) (Reset [Assignment x1 (Expr "10")])
-t2 = Transition off1 on1 (Guard (Expr "x1<=20")) (Reset [emptyAssn])
-t3 = Transition on1 off1 (Guard (Expr "x1>=30")) (Reset [emptyAssn])
+t1 = CTransition start on1 (CGuard (CExpr "")) (CReset [CAssignment x1 (CExpr "10")])
+t2 = CTransition off1 on1 (CGuard (CExpr "x1<=20")) (CReset [emptyAssn])
+t3 = CTransition on1 off1 (CGuard (CExpr "x1>=30")) (CReset [emptyAssn])
 
 -- | The model itself!
-simpleModel = Model [off1,on1] [t1,t3,t2]
+simpleModel = CModel [off1,on1] [t1,t3,t2]
 

@@ -15,7 +15,6 @@ import Model
 
 import Text.Parsec
 import Data.List (nub)
-import Data.List.Split (splitOn)
 
 
 -- | Extract all unique valid MATLAB variables from arithmetic expressions
@@ -32,7 +31,7 @@ var :: Parsec String () Var
 var = do
   char1 <- letter
   charRest <- many $ alphaNum <|> char '_'
-  return (Var $ char1:charRest)
+  return (CVar $ char1:charRest)
 
 expr :: Parsec String () Expr
 expr =
@@ -43,7 +42,7 @@ expr =
         (alphaNum <|>
          oneOf (arith ++ logic ++ cmp ++ "_ .") <?>
          "sequence of numbers, digits, arithmetic/comparison/logic operators, or spaces") >>=
-      return . Expr . filter (/= ' ')
+      return . CExpr . filter (/= ' ')
 
 -- | Assignments have a @Var@ on the left and @Expr@ on the right separated by
 -- an \"=\"
@@ -51,8 +50,9 @@ assignment :: Parsec String () Assignment
 assignment = do
   v <- var
   e <- (many $ noneOf "=") *> char '=' *> expr
-  return (Assignment v e)
+  return (CAssignment v e)
 
+assignmentSep :: Parsec String () String
 assignmentSep = string ";" >> many (char ' ' <|> char '\n')
 
 -- | Assignments are valid MATLAB arithmetic syntax separated by
@@ -68,26 +68,26 @@ flowHeader =
 -- | Flow is of the form: \"FlowHeader: assignments...\". Make sure we get rid
 -- of the header first
 flow :: Parsec String () Flow
-flow = flowHeader >> assignments >>= return . Flow
+flow = flowHeader >> assignments >>= return . CFlow
 
 reset :: Parsec String () Reset
 reset = do
   skipMany space
   a <- assignments
   skipMany space
-  return $ Reset a
+  return $ CReset a
 
 guard :: Parsec String () Guard
-guard = expr >>= return . Guard
+guard = expr >>= return . CGuard
 
 -- | A transition LabelString has the form [guard] {reset}, both of which may be
 -- possibly empty. Guards are expressions and Resets maybe multiple separated
 -- assignments
 transition :: Parsec String () (Guard,Reset)
 transition = do
-  g <- option (Guard (Expr "")) $ between (char '[') (char ']') guard
+  g <- option (CGuard (CExpr "")) $ between (char '[') (char ']') guard
   skipMany (space <|> newline)
   r <-
-    option (Reset [Assignment (Var "") (Expr "")]) $
+    option (CReset [CAssignment (CVar "") (CExpr "")]) $
     between (char '{') (char '}') reset
   return (g, r)

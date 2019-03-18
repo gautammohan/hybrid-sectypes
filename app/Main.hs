@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
@@ -33,7 +34,7 @@ main = do
     case eitherDecode modelStr of
       Left err -> "Could not read model -- " ++ err
       Right model ->
-        case inferVars (CModel model) anns of
+        case inferVars (model :: Model) anns of
           Left violation -> "Violation: " ++ formatViolation violation
           Right (_, remainders) ->
             case remainders of
@@ -43,7 +44,7 @@ main = do
     getVarTypes :: String -> [(Var, Type)]
     getVarTypes s =
       s & filter (/= ' ') & lines & map (splitOn ":") &
-      map (\[a, b] -> (Var a, read b)) --HACK non-exhaustive pattern match!!!
+      map (\[a, b] -> (CVar a, read b)) --HACK non-exhaustive pattern match!!!
     ----
     formatViolation (Violation cs) =
       "High information in " ++ highv ++
@@ -51,10 +52,11 @@ main = do
       lowv ++ "\n\nin component " ++ show greatestComponent
         --HACK pretty unsafe code here...
       where
-        unwrap (CVar (Var v)) = v
+        unwrap :: AnyC -> String
+        unwrap (AnyC (CVar v)) = v
         highv = unwrap . fst . head . tail $ cs
         lowv = unwrap . fst . last . init $ cs
         greatestComponent = snd $ maximumBy (compare `on` snd) cs
     formatWarning vars =
       "equivalent variables " ++
-      intercalate "," (fmap (\(Var v) -> v) vars) ++ " are unspecified!"
+      intercalate "," (fmap (\(CVar v) -> v) vars) ++ " are unspecified!"
