@@ -7,6 +7,7 @@ possible given some initial specifications.
 
 -}
 
+{-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# LANGUAGE DeriveFunctor #-}
 
 module Inference where
@@ -19,13 +20,11 @@ import ParseInternals (extractVars)
 import Data.Map
   ( Map
   , (!)
-  , (!?)
   , empty
   , filterWithKey
   , fromList
   , insert
   , keys
-  , map
   , mapKeys
   , member
   , toList
@@ -33,15 +32,9 @@ import Data.Map
 import Data.Maybe (fromJust, mapMaybe, isJust)
 import Data.List (delete, find, nub)
 import Data.Graph.Inductive
-  ( DynGraph
-  , Edge
-  , Gr
-  , LNode
+  (Gr
   , LPath(LP)
-  , LPath
   , Node
-  , UEdge
-  , esp
   , lab
   , lesp
   , mkGraph
@@ -122,6 +115,7 @@ addConstraint c comp = do
 addConstraints :: [Constraint] -> Component -> State CGenState ()
 addConstraints cs comp = sequence_ . fmap (flip addConstraint comp) $ cs
 
+emptyState :: CGenState
 -- | New state to begin generating constraints
 emptyState =
   CGenState {nmap = empty, constraints = [], cmap = empty, counter = 0}
@@ -154,7 +148,7 @@ genConstraints c = do
            ce@(CExpr (Expr e)) ->
              let vars =
                    case parse extractVars "" e of
-                     Left err ->
+                     Left _ ->
                        error "could not extract variables from expression"
                      Right vars' -> fmap (CVar) vars'
               in do recordNode ce
@@ -199,6 +193,7 @@ genConstraints c = do
                , t2@(Transition _ dest _ _) <- ts
                , src == dest
                ]
+           (CModel (Parallel _)) -> error "Undefined genconstraints for Parallel models"
            (CTy _ ) -> return ()
     where
       addConstraint' = flip addConstraint c
@@ -313,6 +308,3 @@ inferVars c anns =
     unwrap (CVar v) = v
     onlyVars (CVar _) = True
     onlyVars _ = False
-
-pretty :: Violation -> String
-pretty (Violation path) = undefined

@@ -1,21 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import ParseJSON
+import ParseJSON()
 import Model
 import Inference
 
-import Control.Monad.Writer
-import Control.Monad.State
+import Control.Monad.Writer()
+import Control.Monad.State()
 
 import Data.Aeson (eitherDecode)
-import qualified Data.Map as M
+import qualified Data.Map as M()
 import Data.List.Split
 import qualified Data.ByteString.Lazy as B (readFile)
 import Data.Function
 import System.Environment
 import Data.List
-import Data.Graph.Inductive hiding ((&))
 
 -- | Takes two arguments: a JSON file output from exportSLSFModel.m and a
 -- corresponding file containing security-type annotations of variables in the
@@ -36,7 +35,7 @@ main = do
       Right model ->
         case inferVars (CModel model) anns of
           Left violation -> "Violation: " ++ formatViolation violation
-          Right (varmap, remainders) ->
+          Right (_, remainders) ->
             case remainders of
               [] -> "Model satisfies noninterference"
               _ -> intercalate "\n" $ fmap formatWarning remainders
