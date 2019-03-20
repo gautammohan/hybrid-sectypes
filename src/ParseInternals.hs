@@ -1,3 +1,5 @@
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds #-}
 {-|
 
 ParseInternals contains functions used to parse various MATLAB strings in
@@ -16,10 +18,14 @@ import Model
 import Text.Parsec
 import Data.List (nub)
 
+extractVars :: Expr -> [Var]
+extractVars (CExpr e) = case parse extractVars' "" e of
+  Right vs -> vs
+  Left err -> error $ "unable to parse vars: " ++ show err
 
 -- | Extract all unique valid MATLAB variables from arithmetic expressions
-extractVars :: Parsec String () [Var] --TODO change type to Parsec Expr () [Var]
-extractVars = do
+extractVars' :: Parsec String () [Var] --TODO change type to Parsec Expr () [Var]
+extractVars' = do
   allvars <- nonLetter *> var `sepEndBy` nonLetter
   return $ nub allvars
   where
