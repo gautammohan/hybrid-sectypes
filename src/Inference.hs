@@ -1,3 +1,6 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 {- |
 
 The Inference module implements security type inference on hybrid systems
@@ -21,6 +24,7 @@ import Prelude hiding (map)
 
 import Model
 import ParseInternals (extractVars)
+import Util
 
 import Data.Map
   ( Map
@@ -35,7 +39,7 @@ import Data.Map
   , toList
   )
 import Data.Maybe (fromJust, mapMaybe, isJust)
-import Data.List (delete, find, nub)
+import Data.List (intersect, delete, find, nub, (\\))
 import Data.Graph.Inductive
   (Gr
   , LPath(LP)
@@ -47,8 +51,6 @@ import Data.Graph.Inductive
   )
 import qualified Data.Set as S
 import Data.Tuple
-
-import Text.Parsec (parse)
 
 import Control.Monad.State
 
@@ -83,7 +85,7 @@ type Constraint = GenericConstraint NLabel
 (%>=) c1 c2 = MkConstraint (LComp (AnyC c1)) GreaterThan (LComp (AnyC c2))
 
 type CMap = Map Constraint NLabel
-
+type RMap = Map Var Int
 -- | Holds a constraint list and environment that get built up as we generate
   -- constraints for model components (that may recursively generate constraints
 -- from subcomponents).
@@ -91,6 +93,7 @@ data CGenState = CGenState { nmap :: NodeMap
                            , constraints :: [Constraint]
                            , cmap :: CMap
                            , counter :: Node -- ^tracks fresh nodes
+                           , rename :: RMap
                            }
 
 deriving instance Show CGenState
@@ -112,24 +115,23 @@ addConstraints cs comp = sequence_ . fmap (flip addConstraint comp) $ cs
 -- | New state to begin generating constraints
 emptyState :: CGenState
 emptyState =
-  CGenState {nmap = empty, constraints = [], cmap = empty, counter = 0}
+  CGenState
+    {nmap = empty, constraints = [], cmap = empty, rename = empty, counter = 0}
 
 -- | Given an (unseen) component, associate it with a fresh node and record that
 -- association in the node map.
-recordNode :: (Sing l) => Component l -> State CGenState ()
-recordNode c = do
+record :: NLabel -> State CGenState ()
+record l = do
   e <- gets nmap
   n <- gets counter
-  modify $ \cgs -> cgs {counter = n + 1, nmap = insert (LComp (AnyC c)) n e}
+  modify $ \cgs -> cgs {counter = n + 1, nmap = insert l n e}
   return ()
+
+recordNode :: (Sing l) => Component l -> State CGenState ()
+recordNode c = record (LComp (AnyC c))
 
 recordTy :: Type -> State CGenState ()
-recordTy ty = do
-  e <- gets nmap
-  n <- gets counter
-  modify $ \cgs -> cgs {counter = n + 1, nmap = insert (LTy ty) n e}
-  return ()
-
+recordTy ty = record (LTy ty)
 
 -- | Generate constraints for a "Component". We track the state as the
 -- constraints are generated, and append constraints to a global list. When we
@@ -147,15 +149,11 @@ genConstraints c = do
     then return ()
     else case c of
            CVar _ -> recordNode c
-           ce@(CExpr e) ->
-             let vars =
-                   case parse extractVars "" e of
-                     Left _ ->
-                       error "could not extract variables from expression"
-                     Right vars' -> vars'
-              in do recordNode ce
+           e@(CExpr _) ->
+             let vars = extractVars e
+              in do recordNode e
                     mapM_ genConstraints vars
-                    addConstraints' [ce %>= v | v <- vars]
+                    addConstraints' [e %>= v | v <- vars]
            a@(CAssignment v e) -> do
              genConstraints e
              genConstraints v
@@ -193,10 +191,46 @@ genConstraints c = do
                , t2@(CTransition _ dest _ _) <- ts
                , src == dest
                ]
-           (CParallel _) -> error "Undefined genconstraints for Parallel models"
+           CParallel ms -> genConstraints' ms
+             where genConstraints' :: [Component 'Model] -> State CGenState ()
+                   genConstraints' [] = return ()
+                   genConstraints' ((CParallel ms):rest) = do
+                     mapM_ genConstraints ms
+                     genConstraints' rest
+                   genConstraints' (m@(CModel _ _):rest) = do
+                     rmap <- gets rename
+                     let clashVars = clashes rmap m
+                     renameVars <- mapM getFreshRename clashVars
+                     let replacementMap = fromList $ zip clashVars renameVars
+                         newModel = replaceVars replacementMap m
+                     addConstraints'
+                       [var %== rvar | (var, rvar) <- toList replacementMap]
+                     genConstraints newModel
+                     updateRename $ getAllVars newModel
+                     genConstraints' rest
   where
     addConstraint' = flip addConstraint c
     addConstraints' = flip addConstraints c
+
+getFreshRename :: Var -> State CGenState Var
+getFreshRename var@(CVar vtext) = do
+  env <- gets rename
+  let i = env ! var
+      ticks = take i $ repeat '\''
+      env' = insert var (env ! var + 1) env
+  modify (\cgs -> cgs {rename = env'})
+  return $ CVar (vtext ++ ticks)
+
+updateRename :: [Var] -> State CGenState ()
+updateRename vars = do
+  rmap <- gets rename
+  modify $ \cgs -> cgs {rename = addNewRenames rmap vars}
+  where
+    addNewRenames :: RMap -> [Var] -> RMap
+    addNewRenames rmap vars = foldr (\v m -> insert v 0 m) rmap (vars \\ keys rmap)
+
+clashes :: RMap -> Model -> [Var]
+clashes rmap m = intersect (keys rmap) (getAllVars m)
 
 -- | For each component we have seen, we need to ensure they are leq High and
 -- geq Low. These constraints are trivial since High and Low represent Top and

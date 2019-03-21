@@ -7,7 +7,7 @@ module Util where
 
 import ParseInternals
 import Model
-import Data.List (intersect, nub, (\\))
+import Data.List (intersect, nub)
 import qualified Data.Map as M
 import Data.Text (unpack, pack, replace)
 
