@@ -6,7 +6,7 @@ SimpleModel is a carefully hand-coded structure meant to mirror simple_model.slx
 
 {-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 
-module SimpleModel (simpleModel) where
+module SimpleModel (simpleModel, simpleModel2, simplePar) where
 
 import Model
 
@@ -31,3 +31,5 @@ t3 = CTransition on1 off1 (CGuard (CExpr "x1>=30")) (CReset [emptyAssn])
 -- | The model itself!
 simpleModel = CModel [off1,on1] [t1,t3,t2]
 
+simpleModel2 = CModel [CMode "foo" (CFlow [CAssignment (CVar "x") (CExpr "")])] []
+simplePar = CParallel [simpleModel2, simpleModel2]

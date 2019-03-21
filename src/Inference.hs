@@ -227,7 +227,7 @@ updateRename vars = do
   modify $ \cgs -> cgs {rename = addNewRenames rmap vars}
   where
     addNewRenames :: RMap -> [Var] -> RMap
-    addNewRenames rmap vars = foldr (\v m -> insert v 0 m) rmap (vars \\ keys rmap)
+    addNewRenames rmap vars = foldr (\v m -> insert v 1 m) rmap (vars \\ keys rmap)
 
 clashes :: RMap -> Model -> [Var]
 clashes rmap m = intersect (keys rmap) (getAllVars m)
