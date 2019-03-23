@@ -8,6 +8,7 @@ import Data.Either
 
 import Inference
 import Model
+import Util
 
 spec :: Spec
 spec = do
@@ -79,3 +80,13 @@ spec = do
         let Right (m, _) = result
         m !? (AnyC a) `shouldBe` Just Low
         m !? (AnyC b) `shouldBe` Just Low
+      let mfile = "fully_dependent_mode.json"
+      specify (mfile) $ do
+        m <- parseFromFile mfile
+        let result = inferVars m [(CVar "x1_dot",Low)]
+        result `shouldSatisfy` isRight
+        let Right (vmap,_) = result
+        vmap !? (CVar "x5") `shouldBe` Just Low
+        putStrLn . show $ getAllVars m
+        putStrLn . show $ keys vmap
+        getAllVars m `shouldMatchList` keys vmap

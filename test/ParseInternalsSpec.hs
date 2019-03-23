@@ -25,8 +25,8 @@ spec = do
       (parse' assignment "gr = gr - (d2 - (r2+p2))") @=?
         Right (CAssignment (CVar "gr") (CExpr "gr-(d2-(r2+p2))"))
     it "extracts all Vars from an CExpr" $ do
-      (parse' extractVars "gr - (d2 - (r2+d2))") @=?
-        Right (fmap CVar ["gr", "d2", "r2"])
+      (extractVars (CExpr "gr - (d2 - (r2+d2))")) @=?
+        fmap CVar ["gr", "d2", "r2"]
     it "parses ;-separated Assignments with spaces" $ do
       (parse' assignments "p1=0; b1 = 0") @=?
         Right
