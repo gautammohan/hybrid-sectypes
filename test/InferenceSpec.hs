@@ -86,7 +86,5 @@ spec = do
         let result = inferVars m [(CVar "x1_dot",Low)]
         result `shouldSatisfy` isRight
         let Right (vmap,_) = result
-        vmap !? (CVar "x5") `shouldBe` Just Low
-        putStrLn . show $ getAllVars m
-        putStrLn . show $ keys vmap
+        elems vmap `shouldBe` [Low, Low,Low,Low,Low,Low]
         getAllVars m `shouldMatchList` keys vmap

@@ -98,6 +98,9 @@ data CGenState = CGenState { nmap :: NodeMap
 
 deriving instance Show CGenState
 
+dummyVar :: Component 'Var
+dummyVar = CVar "Dummy'"
+
 -- | Helper function to add a new constraint to the list of constraints
 addConstraint :: (Sing l) => Constraint -> Component l -> State CGenState ()
 addConstraint constraint component = do
@@ -227,7 +230,8 @@ updateRename vars = do
   modify $ \cgs -> cgs {rename = addNewRenames rmap vars}
   where
     addNewRenames :: RMap -> [Var] -> RMap
-    addNewRenames rmap vars = foldr (\v m -> insert v 1 m) rmap (vars \\ keys rmap)
+    addNewRenames rmap vars =
+      foldr (\v m -> insert v 1 m) rmap (vars \\ keys rmap)
 
 clashes :: RMap -> Model -> [Var]
 clashes rmap m = intersect (keys rmap) (getAllVars m)
@@ -240,10 +244,10 @@ addHighLowConstraints = do
   components <- liftM keys $ gets nmap
   addConstraints
     ([MkConstraint (LTy High) GreaterThan c | c <- components])
-    (CVar "Dummy'")
+    dummyVar
   addConstraints
     ([MkConstraint c GreaterThan (LTy Low) | c <- components])
-    (CVar "Dummy'")
+    dummyVar
 
 -- | Given a mapping of Components to nodes and a list of unique constraints
 -- between components, create a dependency graph where nodes are labeled with
@@ -281,9 +285,13 @@ inferDepGraph c vs =
         genConstraints c
         addHighLowConstraints
         addUserAnnotations vs
+        modify $ \cgs -> cgs {nmap = removeDummies (nmap cgs)}
       CGenState {nmap = nodemap, cmap = cmap, constraints = cs} =
         execState inferSteps emptyState
    in buildDepGraph nodemap cmap cs
+
+removeDummies :: NodeMap -> NodeMap
+removeDummies = filterWithKey $ \k _ -> k /= (LComp . AnyC $ dummyVar)
 
 data Violation = Violation [(AnyC, AnyC)]
 
@@ -308,7 +316,7 @@ checkDepGraph g =
                 extract (LComp c, LTy _) = (c, AnyC (CVar "user'"))
                 extract (LTy _, LComp c) = (AnyC (CVar "user'"),c)
                 extract (LTy _, LTy _) =
-                  (AnyC (CVar "dummy what"), AnyC (CVar "dummy what"))
+                  (AnyC dummyVar, AnyC dummyVar)
                 lookup (n, e) = extract (fromJust $ lab g n, e)
 
 -- | Extract the SCCs containing High and Low to find all components of that
@@ -318,8 +326,8 @@ checkDepGraph g =
 -- "remainders" in a list.
 getComponentTypes :: DepGraph -> (CTyMap, [Remainder])
 getComponentTypes g = (tymap, remainder sccs)
-  where
     -- Find all components that are either high or low
+  where
     tymap = fromList (mkPairs hscc High ++ mkPairs lscc Low)
     -- And group the remaining untyped components as remainders
     remainder :: [[Node]] -> [[AnyC]]
@@ -327,16 +335,20 @@ getComponentTypes g = (tymap, remainder sccs)
       (fmap . fmap) (unsafelab g) $ delete hscc . delete lscc $ sccs
     -------
     mkPairs :: [Node] -> Type -> [(AnyC, Type)]
-    mkPairs ns ty = fmap (\n -> (unsafelab g $ n, ty)) ns
+    mkPairs ns ty = fmap (\n -> (unsafelab g $ n, ty)) (filter isComponent ns)
     unsafelab g = extract . fromJust . lab g
     extract (LComp c) = c
-    extract (LTy _) = (AnyC (CVar "Dummy"))
+    extract (LTy _) = error "should never extract an LTy"
+    isComponent :: Node -> Bool
+    isComponent n =
+      case (fromJust . lab g) n of
+        LTy _ -> False
+        LComp _ -> True
     -------
     sccs = scc g
     getSCCWith n = head $ filter (n `elem`) sccs
     hscc = getSCCWith 0
     lscc = getSCCWith 1
-
 
 type VarTypes = Map Var Type
 
