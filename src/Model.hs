@@ -141,3 +141,9 @@ type Mode = Component 'Mode
 type Transition = Component 'Transition
 type Model = Component 'Model
 type Parallel = Component 'Model
+
+-- | High security types are for secret data, Low can be observed publically
+data Type
+  = High
+  | Low
+  deriving (Show, Read, Eq, Ord)

@@ -85,10 +85,5 @@ removeFrom s1' s2' = removeFrom' s1' s2'
         then removeFrom' c1s c2s
         else c2 : (removeFrom' s1 c2s)
 
-s = "x_dot + 2x"
-e = CExpr s
-vars = extractVars e
-vs = map unwrap vars
-
 unwrap :: Var -> String
 unwrap (CVar v) = v

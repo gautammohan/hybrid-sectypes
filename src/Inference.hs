@@ -27,7 +27,7 @@ import ParseInternals (extractVars)
 import Util
 
 import Data.Map
-  ( Map
+  ((!?),  Map
   , (!)
   , empty
   , filterWithKey
@@ -53,12 +53,6 @@ import qualified Data.Set as S
 import Data.Tuple
 
 import Control.Monad.State
-
--- | High security types are for secret data, Low can be observed publically
-data Type
-  = High
-  | Low
-  deriving (Show, Read, Eq, Ord)
 
 data NLabel = LTy Type | LComp AnyC deriving (Show, Eq, Ord)
 
@@ -357,6 +351,17 @@ getComponentTypes g = (tymap, remainder sccs)
     lscc = getSCCWith 1
 
 type VarTypes = Map Var Type
+
+typeIn ::
+     (Sing l, Sing l2)
+  => Component l
+  -> Component l2
+  -> [(Var, Type)]
+  -> Either Violation (Maybe Type)
+typeIn innerC outerC anns =
+  case checkDepGraph . (flip inferDepGraph anns) $ outerC of
+    Left violation -> Left violation
+    Right (ctymap, _) -> Right $ ctymap !? AnyC innerC
 
 inferVars ::
      (Sing l)
