@@ -36,7 +36,7 @@ extractVars' = do
 var :: Parsec String () Var
 var = do
   char1 <- letter
-  charRest <- many $ alphaNum <|> char '_'
+  charRest <- many $ alphaNum <|> char '_' <|> char '\''
   return (CVar $ char1:charRest)
 
 expr :: Parsec String () Expr

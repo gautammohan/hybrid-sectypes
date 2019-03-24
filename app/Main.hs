@@ -44,7 +44,7 @@ main = do
                 (intercalate "\n" $ fmap fmtInferred (toList varTys)) ++
                 "\n" ++
                 case remainders of
-                  [] ->
+                  [[]] ->
                     "All variables have valid inferred type." ++
                     " Model satisfies noninterference"
                   _ ->
