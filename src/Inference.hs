@@ -169,7 +169,7 @@ genConstraints c = do
            m@(CMode _ f) -> do
              genConstraints f
              recordNode m
-             addConstraint' $ m %== f
+             addConstraint' $ f %>= m
            g@(CGuard e) -> do
              genConstraints e
              recordNode g
@@ -184,15 +184,21 @@ genConstraints c = do
              genConstraints g
              genConstraints r
              recordNode t
-             addConstraints' [r %>= g, src %>= g, dst %>= g, t %== g]
+             addConstraints' [g %>= t, r %>= g]
+             if src == dst then
+               return ()
+               else
+               addConstraints' $ [dst %>= src, src %>= g]
+               where
+                 -- lowEquivalent _ _ = undefined -- TODO
            CModel ms ts -> do
              mapM_ genConstraints ms
              mapM_ genConstraints ts
              addConstraints'
-               [ t1 %>= t2
-               | t1@(CTransition src _ _ _) <- ts
-               , t2@(CTransition _ dest _ _) <- ts
-               , src == dest
+               [ t2 %>= t1
+               | t1@(CTransition src1 dst1 _ _) <- ts
+               , t2@(CTransition src2 dst2 _ _) <- ts
+               , dst1 == src2 && src1 /= dst2
                ]
            CParallel ms -> genConstraints' ms
              where genConstraints' :: [Component 'Model] -> State CGenState ()
