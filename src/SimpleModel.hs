@@ -31,5 +31,7 @@ t3 = CTransition on1 off1 (CGuard (CExpr "x1>=30")) (CReset [emptyAssn])
 -- | The model itself!
 simpleModel = CModel [off1,on1] [t1,t3,t2]
 
+-- | Another model for testing
 simpleModel2 = CModel [CMode "foo" (CFlow [CAssignment (CVar "x") (CExpr "")])] []
+-- | A simple Parallel model to unit test Parallel model renaming
 simplePar = CParallel [simpleModel2, simpleModel2]

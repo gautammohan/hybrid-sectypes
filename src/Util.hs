@@ -1,9 +1,14 @@
+{- |
+
+Util is a few miscellaneous functions that are helpful to other Modules
+
+-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ExplicitForAll #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Util where
+module Util (getAllVars, replaceVars, parseFromFile) where
 
 import ParseInternals
 import Model
@@ -17,6 +22,7 @@ import qualified Data.ByteString.Lazy as B (readFile)
 getAllVars' :: [Assignment] -> [Var]
 getAllVars' as = nub $ concatMap getAllVars as
 
+-- | Get all unique variables contained in a Component
 getAllVars :: Component l -> [Var]
 getAllVars (CVar "") = []
 getAllVars v@(CVar _) = [v]
@@ -32,6 +38,11 @@ getAllVars (CModel ms ts) =
   nub $ concatMap getAllVars ms ++ concatMap getAllVars ts
 getAllVars (CParallel ms) = nub $ concatMap getAllVars ms
 
+-- | Given a dictionary of Var -> Var mappingss, replace each matching var with
+-- the element in the map. This function has an unchecked invariant: a
+-- replacement variable must not be present in the model. Otherwise, this code
+-- could clobber those variables, depending on the order in which they are
+-- processed.
 replaceVars :: M.Map Var Var -> Component l -> Component l
 replaceVars dict cv@(CVar _) = M.findWithDefault cv cv dict
 replaceVars dict ce@(CExpr e) =
@@ -66,24 +77,10 @@ replaceVars dict (CModel ms ts) = CModel (replace' ms) (replace' ts)
     replace' = map (replaceVars dict)
 replaceVars dict (CParallel ms) = CParallel $ map (replaceVars dict ) ms
 
+-- | Quick and unsafe way to get Models from JSON into Haskell to work with
 parseFromFile :: String -> IO Model
 parseFromFile fname = do
   raw <- B.readFile fname
   return $ case eitherDecode raw of
     Right m -> m
     Left err -> error err
-
--- | Given all characters of s1 embedded in s2 (in order), walk s2 and remove
--- all the characters in s1, basically an ordered list difference
-removeFrom :: String -> String -> String
-removeFrom s1' s2' = removeFrom' s1' s2'
-  where
-    removeFrom' _ [] = []
-    removeFrom' [] s2 = s2
-    removeFrom' s1@(c1:c1s) (c2:c2s) =
-      if c1 == c2
-        then removeFrom' c1s c2s
-        else c2 : (removeFrom' s1 c2s)
-
-unwrap :: Var -> String
-unwrap (CVar v) = v

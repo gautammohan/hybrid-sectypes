@@ -10,12 +10,27 @@ Abstract representation of EFSM-based hybrid systems.
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeOperators #-}
 
-module Model where
+module Model
+  ( Component(..)
+  , Type(..)
+  , Sing
+  , AnyC(..)
+  , Var
+  , Expr
+  , Assignment
+  , Flow
+  , Guard
+  , Reset
+  , Mode
+  , Transition
+  , Model
+  , Parallel
+  ) where
 
 import Data.Type.Equality
-import Data.Map
 
 type Name = String
+
 data Label
   = Var
   | Expr
@@ -28,6 +43,7 @@ data Label
   | Model
   deriving (Eq, Ord)
 
+-- | A Component constructor creates components of a hybrid system.
 data Component (a :: Label) where
   CVar :: String -> Component 'Var
   CExpr :: String -> Component 'Expr
@@ -60,6 +76,7 @@ data STy :: Label -> * where
   STrans :: STy 'Transition
   SModel :: STy 'Model
 
+-- | Typeclass containing a singleton used to determine equality between AnyCs at the type level
 class Sing l where
   sing :: STy l
 instance Sing ('Var) where
@@ -113,6 +130,7 @@ cmpSTy STrans STrans = Just Refl
 cmpSTy SModel SModel = Just Refl
 cmpSTy _ _ = Nothing
 
+-- | Wrapper for a datatype that could be any Component
 data AnyC where
   AnyC :: Sing l => Component l -> AnyC
 
@@ -131,15 +149,29 @@ instance (Ord AnyC) where
           Just Refl -> compare c1 c2
           Nothing -> compare (getLabel sty1) (getLabel sty2)
 
+-- | Variables in a Hybrid System
 type Var = Component 'Var
+-- | Expressions (saved as raw MATLAB expression strings)
 type Expr = Component 'Expr
+-- | Assignments of the form Var = Expr
 type Assignment = Component 'Assignment
+-- | A Flow is a list of Assignments
 type Flow = Component 'Flow
+-- | A Guard expression represents the switching condition of a Transition
 type Guard = Component 'Guard
+-- | A Reset is a list of Assignments that are applied before transitioning
+-- between modes
 type Reset = Component 'Reset
+-- | A Mode contains a Flow and Name
 type Mode = Component 'Mode
+-- | Transitions are constructed with the following convention: first arg is the
+-- src mode and second arg is the dst mode
 type Transition = Component 'Transition
+-- | A model contains a list of Modes and Transitions (unchecked invariant: all
+-- Modes in Transitions are present in the mode list)
 type Model = Component 'Model
+-- | A Parallel model holds Models or more Parallel models. Allows us to model
+-- hierarchical hybrid systems as an n-ary tree
 type Parallel = Component 'Model
 
 -- | High security types are for secret data, Low can be observed publically

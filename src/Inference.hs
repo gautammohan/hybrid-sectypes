@@ -28,8 +28,9 @@ import ParseInternals (extractVars)
 import Util
 
 import Data.Map
-  ((!?),  Map
+  ( Map
   , (!)
+  , (!?)
   , empty
   , filterWithKey
   , fromList
@@ -56,10 +57,19 @@ import Data.Tuple
 import Control.Monad.State
 import Control.Lens
 
-
+-- | An NLabel represents an element of the DepGraph, which is either a
+-- Component (wrapped in an AnyC) or a Type. The only two types that should be
+-- present in a DepGraph are High and Low and represent "top" and "bottom".
 data NLabel = LTy Type | LComp AnyC deriving (Show, Eq, Ord)
 
+-- | A graph representing the relationships between the security types of
+-- various components in a hybrid system. A directed edge (c1,c2) indicates the
+-- security type of c1 must be less than or equal to c2, i.e. c1 cannot be High
+-- and c2 cannot be Low.
 type DepGraph = Gr NLabel NLabel
+
+-- | Used to keep track of NLabels that have already been assigned an internal
+-- node
 type NodeMap = Map NLabel Node
 
 -- | Relations between CExprs that our typing rules can generate
@@ -68,33 +78,49 @@ instance Show Op where
   show Equals = "=="
   show GreaterThan = ">="
 
+-- | Make Constraints take a parameter so we can derive Functor and save
+-- ourselves some code
 data GenericConstraint a = MkConstraint a Op a deriving (Eq, Ord, Functor)
 
 instance (Show a) => Show (GenericConstraint a) where
   show (MkConstraint lhs op rhs) = show lhs ++ " " ++ show op ++ " " ++ show rhs
 
+-- | The only constraints we care about in this Inference are between NLabels.
+-- This is to specify a relation between two components, or in the case of user
+-- annotations, how a component relates to either High or Low in the DepGraph
 type Constraint = GenericConstraint NLabel
 
+-- | Constructor that specifies two components must have the _same_ security type
 (%==) :: (Sing l, Sing l2) => Component l -> Component l2 -> Constraint
 (%==) c1 c2 = MkConstraint (LComp (AnyC c1)) Equals (LComp (AnyC c2))
 
+-- | Constructor that specifies c1 must be greater than c2
 (%>=) :: (Sing l, Sing l2) => Component l -> Component l2 -> Constraint
 (%>=) c1 c2 = MkConstraint (LComp (AnyC c1)) GreaterThan (LComp (AnyC c2))
 
+-- | Used to track which Constraint produced a certain dependency in the DepGraph
 type CMap = Map Constraint NLabel
-type RMap = Map Var Int
+
+-- | an SMap tracks which Variables have been seen and holds state to ensure we
+-- are renaming them properly. This should have the same keys as a NodeMap in a
+-- CGenState.
+type SMap = Map Var Int
+
 -- | Holds a constraint list and environment that get built up as we generate
-  -- constraints for model components (that may recursively generate constraints
+-- constraints for model components (that may recursively generate constraints
 -- from subcomponents).
-data CGenState = CGenState { _nmap :: NodeMap
-                           , _constraints :: [Constraint]
-                           , _cmap :: CMap
-                           , _counter :: Node -- ^tracks fresh nodes
-                           , _rename :: RMap
-                           } deriving (Show)
+data CGenState = CGenState
+  { _nmap :: NodeMap -- ^Maps components we've seen to fresh DepGraph nodes
+  , _constraints :: [Constraint] -- ^list of constraints that are built up
+  , _cmap :: CMap -- ^tracks which constraints generated certain vars
+  , _counter :: Node -- ^tracks fresh nodes
+  , _seen :: SMap -- ^tracks state to ensure seen variables are renamed properly
+  } deriving (Show)
 makeLenses ''CGenState
 
-dummyVar :: Component 'Var
+-- | Placeholder var we use for history that doesn't matter that should be
+-- scrubbed.
+dummyVar :: Var
 dummyVar = CVar "Dummy'"
 
 -- | Helper function to add a new constraint to the list of constraints
@@ -111,9 +137,9 @@ addConstraints cs comp = sequence_ . fmap (flip addConstraint comp) $ cs
 emptyState :: CGenState
 emptyState =
   CGenState
-    {_nmap = empty, _constraints = [], _cmap = empty, _rename = empty, _counter = 0}
+    {_nmap = empty, _constraints = [], _cmap = empty, _seen = empty, _counter = 0}
 
--- | Given an (unseen) component, associate it with a fresh node and record that
+-- | Given an (unseen) component or type, associate it with a fresh node and record that
 -- association in the node map.
 record :: NLabel -> State CGenState ()
 record l = do
@@ -121,9 +147,11 @@ record l = do
   counter += 1
   nmap %= insert l n
 
+-- | Record a Component
 recordNode :: (Sing l) => Component l -> State CGenState ()
 recordNode c = record (LComp (AnyC c))
 
+-- | Record a Node
 recordTy :: Type -> State CGenState ()
 recordTy ty = record (LTy ty)
 
@@ -192,10 +220,10 @@ genConstraints c = do
                , dst1 == src2 && src1 /= dst2
                ]
            CParallel ms -> mapM_ genConstraints' ms
-             where genConstraints' :: Component 'Model -> State CGenState ()
+             where genConstraints' :: Model -> State CGenState ()
                    genConstraints' (CParallel ms) = mapM_ genConstraints ms
                    genConstraints' m@(CModel _ _) = do
-                     rmap <- use rename
+                     rmap <- use seen
                      let clashVars = clashes rmap m
                      renameVars <- mapM getFreshRename clashVars
                      let replacementMap = fromList $ zip clashVars renameVars
@@ -203,29 +231,35 @@ genConstraints c = do
                      addConstraints'
                        [var %== rvar | (var, rvar) <- toList replacementMap]
                      genConstraints newModel
-                     updateRename $ getAllVars newModel
+                     updateSeen $ getAllVars newModel
   where
     addConstraint' = flip addConstraint c
     addConstraints' = flip addConstraints c
 
+-- | Given a Var, get a renamed version that is guaranteed to not be present in
+-- any other model (basically postfixing it with an increasing number of ticks)
 getFreshRename :: Var -> State CGenState Var
 getFreshRename var@(CVar vtext) = do
-  env <- use rename
+  env <- use seen
   let i = env ! var
       ticks = take i $ repeat '\''
       env' = insert var (env ! var + 1) env
-  modify (\cgs -> cgs {_rename = env'})
+  modify (\cgs -> cgs {_seen = env'})
   return $ CVar (vtext ++ ticks)
 
-updateRename :: [Var] -> State CGenState ()
-updateRename vars = do
-  rename %= addNewRenames vars
+-- | If we have seen new variables, add them to what we've seen in case they're
+-- present in future Models down the road
+updateSeen :: [Var] -> State CGenState ()
+updateSeen vars = do
+  seen %= addNewSeen vars
   where
-    addNewRenames :: [Var] -> RMap -> RMap
-    addNewRenames vars rmap =
+    addNewSeen :: [Var] -> SMap -> SMap
+    addNewSeen vars rmap =
       foldr (\v m -> insert v 1 m) rmap (vars \\ keys rmap)
 
-clashes :: RMap -> Model -> [Var]
+-- | Find which Variables in a model clash with those we've already seen, i.e.
+-- which ones need to be renamed
+clashes :: SMap -> Model -> [Var]
 clashes rmap m = intersect (keys rmap) (getAllVars m)
 
 -- | For each component we have seen, we need to ensure they are leq High and
@@ -281,14 +315,26 @@ inferDepGraph c vs =
       st = execState inferSteps emptyState
    in buildDepGraph (st ^. nmap) (st ^. cmap) (st ^. constraints)
 
+-- | Filter out dummy variables (used in a few corner cases)
 removeDummies :: NodeMap -> NodeMap
 removeDummies = filterWithKey $ \k _ -> k /= (LComp . AnyC $ dummyVar)
 
+-- | A Violation is a path from High to Low in the DepGraph. It is represented
+-- as a list of tuples (C1,C2) where C1 is the component node present in the
+-- Path and C2 is the component that generated the constraint that created the
+-- dependency in the DepGraph. This provides a trace of the offending
+-- components, as well as which components' constraints produced the
+-- dependencies that led to the violation.
 data Violation = Violation [(AnyC, AnyC)]
 
 deriving instance Show Violation
 
+-- | Mapping Components to Types based on the inferred Dependency Graph
 type CTyMap = Map AnyC Type
+
+-- | A remainder is a list of Components in an SCC in the DepGraph that does not
+-- contain High or Low, i.e. all the ariables must be the same type, but we
+-- can't infer what that type is.
 type Remainder = [AnyC]
 
 -- | Check if a DepGraph is valid. If there exists a path from High to Low,
@@ -341,8 +387,11 @@ getComponentTypes g = (tymap, remainder sccs)
     hscc = getSCCWith 0
     lscc = getSCCWith 1
 
+-- | A Mapping from Vars to their Types; the final output we want our inference
+-- to produce.
 type VarTypes = Map Var Type
 
+-- | Find the type of a subcomponent in a larger component, if it exists.
 typeIn ::
      (Sing l, Sing l2)
   => Component l
@@ -354,6 +403,9 @@ typeIn innerC outerC anns =
     Left violation -> Left violation
     Right (ctymap, _) -> Right $ ctymap !? AnyC innerC
 
+-- | A function that takes a component and a list of user-specified variable
+-- type annotationsn and returns all variables that can be inferred and the
+-- remainders. If there is a Violation, return that instead.
 inferVars ::
      (Sing l)
   => Component l

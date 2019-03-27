@@ -18,12 +18,15 @@ import Model
 import Text.Parsec
 import Data.List (nub)
 
+-- | Extract all unique valid MATLAB variables from arithmetic expressions. Note
+-- that this breaks for the ' operator in MATLAB, which represents transpose,
+-- since we use ticked variables like a' or b'' in our functions that handle
+-- variable renaming.
 extractVars :: Expr -> [Var]
 extractVars (CExpr e) = case parse extractVars' "" e of
   Right vs -> vs
   Left err -> error $ "unable to parse vars: " ++ show err
 
--- | Extract all unique valid MATLAB variables from arithmetic expressions
 extractVars' :: Parsec String () [Var] --TODO change type to Parsec Expr () [Var]
 extractVars' = do
   allvars <- nonLetter *> var `sepEndBy` nonLetter
