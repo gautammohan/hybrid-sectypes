@@ -7,6 +7,9 @@ import Model
 import Inference
 import Util
 
+import System.Environment
+
+import Control.Monad
 import Control.Monad.Writer()
 import Control.Monad.State()
 
@@ -16,8 +19,8 @@ import qualified Data.Map as M()
 import Data.List.Split
 import qualified Data.ByteString.Lazy as B (readFile)
 import Data.Function
-import System.Environment
 import Data.List
+import Data.Bifunctor
 
 -- | Takes two arguments: a JSON file output from exportSLSFModel.m and a
 -- corresponding file containing security-type annotations of variables in the
@@ -33,27 +36,24 @@ main = do
   varStr <- readFile varFile
   let anns = getVarTypes varStr
   putStrLn $
-    case eitherDecode modelStr of
-      Left err -> "Could not read model -- " ++ err
-      Right model ->
-        case fmap (\(v, _) -> v) anns \\ getAllVars model of
-          [] ->
-            case inferVars (model :: Model) anns of
-              Left violation -> "Violation: " ++ formatViolation violation
-              Right (varTys, remainders) ->
-                (intercalate "\n" $ fmap fmtInferred (toList varTys)) ++
-                "\n" ++
-                case remainders of
-                  [[]] ->
-                    "All variables have valid inferred type." ++
-                    " Model satisfies noninterference"
-                  _ ->
-                    "Unknown Variables: " ++
-                    intercalate
-                      " , "
-                      (fmap formatWarning (filter (/= []) remainders))
-          xs -> "error, annotated variables not present in model: " ++ show xs
-    ----
+    either id id $ do
+      model <- eitherDecode modelStr & first ("Could not read model --" ++)
+      let unknownVars = fmap fst anns \\ getAllVars model
+      unless (null unknownVars) $
+        Left ("error, variables not present in model: " ++ show unknownVars)
+      (varTys, remainders) <-
+        inferVars (model :: Model) anns &
+        first (\v -> "Violation: " ++ formatViolation v)
+      pure $
+        (intercalate "\n" $ fmtInferred <$> (toList varTys)) ++
+        "\n" ++
+        case remainders of
+          [[]] ->
+            "All variables have valid inferred type." ++
+            " Model satisfies noninterference"
+          _ ->
+            "Unknown Variables: " ++
+            intercalate " , " (formatWarning <$> (filter (/= []) remainders))
   where
     fmtInferred :: (Var, Type) -> String
     fmtInferred (CVar v, ty) = v ++ " : " ++ show ty
@@ -76,6 +76,3 @@ getVarTypes :: String -> [(Var, Type)]
 getVarTypes s =
   s & filter (/= ' ') & lines & map (splitOn ":") &
   map (\[a, b] -> (CVar a, read b)) --HACK non-exhaustive pattern match!!!
-
-diff :: (Sing l) => [(Var,Type)] -> Component l -> [Var]
-diff anns c = fmap (\(v,_) -> v) anns \\ getAllVars c
