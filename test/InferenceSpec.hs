@@ -3,12 +3,14 @@ module InferenceSpec (spec) where
 import Test.Hspec
 import Control.Monad.State
 import Data.Map as M
-import Control.Exception (evaluate)
 import Data.Either
 
 import Inference
 import Model
 import Util
+
+getTestFile :: String -> String
+getTestFile s = "unittest_models/" ++ s ++ ".json"
 
 spec :: Spec
 spec = do
@@ -16,31 +18,30 @@ spec = do
     specify "variables" $ do
       let oneV = genConstraints (CVar "v")
       let (_, st) = runState oneV emptyState
-      (counter st) `shouldBe` 1
+      (_counter st) `shouldBe` 1
     specify "expressions" $ do
       let e = genConstraints (CExpr "x2_dot+0.02*x2")
       let (_, st) = runState e emptyState
-      (counter st) `shouldBe` 3 --2 vars, 1 expr
-      length (constraints st) `shouldBe` 2 --expr tyv relates to two var tyvs
+      (_counter st) `shouldBe` 3 --2 vars, 1 expr
+      length (_constraints st) `shouldBe` 2 --expr tyv relates to two var tyvs
     specify "assignments" $ do
-      let a =
-            genConstraints (CAssignment (CVar "x2_dot") (CExpr "-0.02*x2"))
+      let a = genConstraints (CAssignment (CVar "x2_dot") (CExpr "-0.02*x2"))
           (_, st) = runState a emptyState
-      (counter st) `shouldBe` 4 --2 vars, 1 expr, 1 assn
-      length (constraints st) `shouldBe` 3 --assn relates to 1var, 1expr + 1var
+      (_counter st) `shouldBe` 4 --2 vars, 1 expr, 1 assn
+      length (_constraints st) `shouldBe` 3 --assn relates to 1var, 1expr + 1var
     specify "flows" $ do
       let a = CAssignment (CVar "x2_dot") (CExpr "-0.02*x2")
           f = genConstraints (CFlow [a, a])
           (_, st) = runState f emptyState
-      (counter st) `shouldBe` 5 -- flow relates to assn + 3 assn constraints
-      length (constraints st) `shouldBe` 4
+      (_counter st) `shouldBe` 5 -- flow relates to assn + 3 assn _constraints
+      length (_constraints st) `shouldBe` 4
     specify "modes" $ do
       let a = CAssignment (CVar "x2_dot") (CExpr "-0.02*x2")
           f = CFlow [a, a]
           m = genConstraints (CMode "m" f)
           (_, st) = runState m emptyState
-      (counter st) `shouldBe` 6 -- 2 vars, 2 exprs, 2 assignments, 1 flow, 1 mode
-      length (constraints st) `shouldBe` 5 -- mode relates to flow + 4 assn
+      (_counter st) `shouldBe` 6 -- 2 vars, 2 exprs, 2 assignments, 1 flow, 1 mode
+      length (_constraints st) `shouldBe` 5 -- mode relates to flow + 4 assn
   describe "Dependency Graph Unit Tests" $ do
       --- Preliminary Declarations for typing ease
       let a = CVar "a"
@@ -80,7 +81,7 @@ spec = do
         let Right (m, _) = result
         m !? (AnyC a) `shouldBe` Just Low
         m !? (AnyC b) `shouldBe` Just Low
-      let mfile = "fully_dependent_mode.json"
+      let mfile = getTestFile "fully_dependent_mode"
       specify (mfile) $ do
         m <- parseFromFile mfile
         let result = inferVars m [(CVar "x1_dot",Low)]
@@ -88,3 +89,12 @@ spec = do
         let Right (vmap,_) = result
         elems vmap `shouldBe` [Low, Low,Low,Low,Low,Low]
         getAllVars m `shouldMatchList` keys vmap
+      let mfile = getTestFile "par_duplicate_modes"
+      specify (mfile) $ do
+        m <- parseFromFile mfile
+        let result = inferVars m [(CVar "y",Low)]
+        result `shouldSatisfy` isRight
+        let Right (vmap,_) = result
+        elems vmap `shouldBe` [Low, Low]
+        getAllVars m `shouldMatchList` keys vmap
+

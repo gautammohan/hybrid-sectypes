@@ -1,6 +1,3 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {- |
 
 The Inference module implements security type inference on hybrid systems
@@ -17,6 +14,10 @@ possible given some initial specifications.
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Inference where
 
@@ -53,6 +54,8 @@ import qualified Data.Set as S
 import Data.Tuple
 
 import Control.Monad.State
+import Control.Lens
+
 
 data NLabel = LTy Type | LComp AnyC deriving (Show, Eq, Ord)
 
@@ -83,14 +86,13 @@ type RMap = Map Var Int
 -- | Holds a constraint list and environment that get built up as we generate
   -- constraints for model components (that may recursively generate constraints
 -- from subcomponents).
-data CGenState = CGenState { nmap :: NodeMap
-                           , constraints :: [Constraint]
-                           , cmap :: CMap
-                           , counter :: Node -- ^tracks fresh nodes
-                           , rename :: RMap
-                           }
-
-deriving instance Show CGenState
+data CGenState = CGenState { _nmap :: NodeMap
+                           , _constraints :: [Constraint]
+                           , _cmap :: CMap
+                           , _counter :: Node -- ^tracks fresh nodes
+                           , _rename :: RMap
+                           } deriving (Show)
+makeLenses ''CGenState
 
 dummyVar :: Component 'Var
 dummyVar = CVar "Dummy'"
@@ -98,12 +100,8 @@ dummyVar = CVar "Dummy'"
 -- | Helper function to add a new constraint to the list of constraints
 addConstraint :: (Sing l) => Constraint -> Component l -> State CGenState ()
 addConstraint constraint component = do
-  modify
-    (\cgs ->
-       cgs
-         { constraints = constraint : (constraints cgs)
-         , cmap = insert constraint (LComp (AnyC component)) (cmap cgs)
-         })
+  constraints %= (constraint :)
+  cmap %= insert constraint (LComp (AnyC component))
 
 -- | Add multiple constraints at once
 addConstraints :: (Sing l) => [Constraint] -> Component l -> State CGenState ()
@@ -113,16 +111,15 @@ addConstraints cs comp = sequence_ . fmap (flip addConstraint comp) $ cs
 emptyState :: CGenState
 emptyState =
   CGenState
-    {nmap = empty, constraints = [], cmap = empty, rename = empty, counter = 0}
+    {_nmap = empty, _constraints = [], _cmap = empty, _rename = empty, _counter = 0}
 
 -- | Given an (unseen) component, associate it with a fresh node and record that
 -- association in the node map.
 record :: NLabel -> State CGenState ()
 record l = do
-  e <- gets nmap
-  n <- gets counter
-  modify $ \cgs -> cgs {counter = n + 1, nmap = insert l n e}
-  return ()
+  n <- use counter
+  counter += 1
+  nmap %= insert l n
 
 recordNode :: (Sing l) => Component l -> State CGenState ()
 recordNode c = record (LComp (AnyC c))
@@ -141,7 +138,7 @@ recordTy ty = record (LTy ty)
 -- recursion ends.
 genConstraints :: (Sing l) => Component l -> State CGenState ()
 genConstraints c = do
-  e <- gets nmap
+  e <- use nmap
   if member (LComp (AnyC c)) e
     then return ()
     else case c of
@@ -194,14 +191,11 @@ genConstraints c = do
                , t2@(CTransition src2 dst2 _ _) <- ts
                , dst1 == src2 && src1 /= dst2
                ]
-           CParallel ms -> genConstraints' ms
-             where genConstraints' :: [Component 'Model] -> State CGenState ()
-                   genConstraints' [] = return ()
-                   genConstraints' ((CParallel ms):rest) = do
-                     mapM_ genConstraints ms
-                     genConstraints' rest
-                   genConstraints' (m@(CModel _ _):rest) = do
-                     rmap <- gets rename
+           CParallel ms -> mapM_ genConstraints' ms
+             where genConstraints' :: Component 'Model -> State CGenState ()
+                   genConstraints' (CParallel ms) = mapM_ genConstraints ms
+                   genConstraints' m@(CModel _ _) = do
+                     rmap <- use rename
                      let clashVars = clashes rmap m
                      renameVars <- mapM getFreshRename clashVars
                      let replacementMap = fromList $ zip clashVars renameVars
@@ -210,27 +204,25 @@ genConstraints c = do
                        [var %== rvar | (var, rvar) <- toList replacementMap]
                      genConstraints newModel
                      updateRename $ getAllVars newModel
-                     genConstraints' rest
   where
     addConstraint' = flip addConstraint c
     addConstraints' = flip addConstraints c
 
 getFreshRename :: Var -> State CGenState Var
 getFreshRename var@(CVar vtext) = do
-  env <- gets rename
+  env <- use rename
   let i = env ! var
       ticks = take i $ repeat '\''
       env' = insert var (env ! var + 1) env
-  modify (\cgs -> cgs {rename = env'})
+  modify (\cgs -> cgs {_rename = env'})
   return $ CVar (vtext ++ ticks)
 
 updateRename :: [Var] -> State CGenState ()
 updateRename vars = do
-  rmap <- gets rename
-  modify $ \cgs -> cgs {rename = addNewRenames rmap vars}
+  rename %= addNewRenames vars
   where
-    addNewRenames :: RMap -> [Var] -> RMap
-    addNewRenames rmap vars =
+    addNewRenames :: [Var] -> RMap -> RMap
+    addNewRenames vars rmap =
       foldr (\v m -> insert v 1 m) rmap (vars \\ keys rmap)
 
 clashes :: RMap -> Model -> [Var]
@@ -241,7 +233,7 @@ clashes rmap m = intersect (keys rmap) (getAllVars m)
 -- Bottom of our security annotations.
 addHighLowConstraints :: State CGenState ()
 addHighLowConstraints = do
-  components <- liftM keys $ gets nmap
+  components <- liftM keys $ (use nmap)
   addConstraints
     ([MkConstraint (LTy High) GreaterThan c | c <- components])
     dummyVar
@@ -285,10 +277,9 @@ inferDepGraph c vs =
         genConstraints c
         addHighLowConstraints
         addUserAnnotations vs
-        modify $ \cgs -> cgs {nmap = removeDummies (nmap cgs)}
-      CGenState {nmap = nodemap, cmap = cmap, constraints = cs} =
-        execState inferSteps emptyState
-   in buildDepGraph nodemap cmap cs
+        nmap %= removeDummies
+      st = execState inferSteps emptyState
+   in buildDepGraph (st ^. nmap) (st ^. cmap) (st ^. constraints)
 
 removeDummies :: NodeMap -> NodeMap
 removeDummies = filterWithKey $ \k _ -> k /= (LComp . AnyC $ dummyVar)
